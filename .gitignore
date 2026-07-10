@@ -1,0 +1,63 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE/editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and experiment trackers
+*.log
+wandb/
+runs/
+events.out.tfevents*
+
+# Model checkpoints and local model caches
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+ExplicitShortCut/ckpt/
+
+# Generated data and training/evaluation outputs
+data/
+imagenet/
+image_data/
+outputs/
+results/
+checkpoints/
+exp/
+exps/
+
+# Dependency/build caches
+.cache/
+huggingface/
+pip-wheel-metadata/
+build/
+dist/
+*.egg-info/
+
+# Temporary files
+tmp/
+temp/
+
+
+# Note
+
+
+/*.pdf
+/*.md
+!README.md
