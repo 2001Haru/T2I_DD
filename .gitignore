@@ -57,7 +57,7 @@ temp/
 
 # Note
 
-
+encoders.py
 /*.pdf
 /*.md
 !README.md

@@ -1,4 +1,5 @@
 import os
+import json
 import torch
 import numpy as np
 import pandas as pd
@@ -12,6 +13,52 @@ warnings.filterwarnings("ignore")
 IMG_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.ppm', '.bmp', '.pgm', '.tif', '.tiff', '.webp')
 MEANS = {'imagenet': [0.485, 0.456, 0.406]}
 STDS = {'imagenet': [0.229, 0.224, 0.225]}
+
+
+def _imagenet_class_file(spec):
+    class_files = {
+        'woof': 'class_woof.txt',
+        'nette': 'class_nette.txt',
+        'imagenet100': 'class100.txt',
+        'imagenet1k': 'class_indices.txt',
+        'IDC': 'class_IDC.txt',
+        'imageA': 'imagenet-a.txt',
+        'imageB': 'imagenet-b.txt',
+        'imageC': 'imagenet-c.txt',
+        'imageD': 'imagenet-d.txt',
+        'imageE': 'imagenet-e.txt',
+    }
+    try:
+        return os.path.join(os.path.dirname(__file__), 'misc', class_files[spec])
+    except KeyError as error:
+        raise AssertionError(f'spec does not exist!') from error
+
+
+def _load_imagenet_class_ids():
+    class_file = os.path.join(os.path.dirname(__file__), 'misc', 'class_indices.txt')
+    with open(class_file, 'r', encoding='utf-8') as file:
+        return [line.strip() for line in file if line.strip()]
+
+
+def _select_imagenet_classes(nclass, phase, seed, spec):
+    all_classes = _load_imagenet_class_ids()
+    if nclass >= len(all_classes):
+        return all_classes
+
+    phase = max(0, phase)
+    cls_from = nclass * phase
+    cls_to = nclass * (phase + 1)
+    if seed == 0:
+        with open(_imagenet_class_file(spec), 'r', encoding='utf-8') as file:
+            classes = [line.strip() for line in file if line.strip()]
+        classes = classes[cls_from:cls_to]
+    else:
+        rng = np.random.RandomState(seed)
+        indices = rng.permutation(len(all_classes))[cls_from:cls_to]
+        classes = [all_classes[index] for index in indices]
+
+    assert len(classes) == nclass
+    return classes
 
 class ImageFolder(datasets.DatasetFolder):
     def __init__(self,
@@ -200,6 +247,114 @@ class ImageFolder(datasets.DatasetFolder):
             return sample, target
 
 
+class ImageNetJsonDataset(torch.utils.data.Dataset):
+    """ImageNet stored in numbered shards with labels supplied by dataset.json."""
+
+    def __init__(self,
+                 root,
+                 transform=None,
+                 target_transform=None,
+                 loader=default_loader,
+                 load_memory=False,
+                 load_transform=None,
+                 nclass=100,
+                 phase=0,
+                 slct_type='random',
+                 seed=-1,
+                 spec='none',
+                 return_origin=False,
+                 return_path=False,
+                 mode_id_file=None):
+        manifest_path = os.path.join(root, 'dataset.json')
+        with open(manifest_path, 'r', encoding='utf-8') as file:
+            manifest = json.load(file)
+        labels = manifest.get('labels')
+        if not isinstance(labels, list):
+            raise ValueError(f"Invalid ImageNet manifest (missing labels list): {manifest_path}")
+        if mode_id_file is not None:
+            raise NotImplementedError('mode_id_file is not supported for dataset.json ImageNet sources.')
+
+        self.root = root
+        self.transform = transform
+        self.target_transform = target_transform
+        self.loader = loader
+        self.return_origin = return_origin
+        self.return_path = return_path
+        self.load_memory = load_memory
+        self.load_transform = load_transform
+        self.nclass = nclass
+        self.spec = spec
+
+        self.classes = _select_imagenet_classes(nclass, phase, seed, spec)
+        self.class_to_idx = {class_name: index for index, class_name in enumerate(self.classes)}
+        all_classes = _load_imagenet_class_ids()
+        source_label_by_class = {class_name: index for index, class_name in enumerate(all_classes)}
+        selected_source_labels = {
+            source_label_by_class[class_name]: local_label
+            for local_label, class_name in enumerate(self.classes)
+        }
+        self.original_labels = [source_label_by_class[class_name] for class_name in self.classes]
+
+        self.samples = []
+        for relative_path, source_label in labels:
+            source_label = int(source_label)
+            if source_label in selected_source_labels:
+                self.samples.append((
+                    os.path.join(root, *relative_path.split('/')),
+                    selected_source_labels[source_label],
+                ))
+        if not self.samples:
+            raise ValueError(
+                f"No images for spec={spec}, nclass={nclass}, phase={phase} were found in {manifest_path}. "
+                "Verify that dataset.json uses the standard ImageNet-1K label order."
+            )
+
+        self.targets = [target for _, target in self.samples]
+        self.imgs = self._load_images(load_transform) if load_memory else self.samples
+
+    def _load_images(self, transform=None):
+        images = []
+        for path, _ in self.samples:
+            image = self.loader(path)
+            if transform is not None:
+                image = transform(image)
+            images.append(image)
+        print(" " * 50, end='\r')
+        return images
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        if self.load_memory:
+            sample = self.imgs[index]
+            path = self.samples[index][0]
+        else:
+            path, _ = self.samples[index]
+            sample = self.loader(path)
+
+        target = self.targets[index]
+        original_target = self.original_labels[target]
+        if self.transform is not None:
+            sample = self.transform(sample)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+            original_target = self.target_transform(original_target)
+
+        if self.return_origin:
+            if self.return_path:
+                return sample, target, original_target, path
+            return sample, target, original_target
+        return sample, target
+
+
+def create_imagenet_dataset(root, **kwargs):
+    """Select the manifest-backed reader when an ImageNet dataset.json is present."""
+    if os.path.isfile(os.path.join(root, 'dataset.json')):
+        return ImageNetJsonDataset(root, **kwargs)
+    return ImageFolder(root, **kwargs)
+
+
 def transform_imagenet(size=-1,
                        augment=False,
                        from_tensor=False,
@@ -302,19 +457,19 @@ def load_data(args, tsne=False,detailed=True):
                                                          from_tensor=False)
     if args.nclass<=20 and args.size <= 256:
         args.load_memory = True
-    train_dataset = ImageFolder(traindir,
-                                train_transform,
-                                nclass=args.nclass,
-                                seed=args.dseed,
-                                slct_type=args.slct_type,
-                                load_memory=args.load_memory,
-                                spec=args.spec)
-    val_dataset = ImageFolder(valdir,
-                              test_transform,
-                              nclass=args.nclass,
-                              seed=args.dseed,
-                              load_memory=args.load_memory,
-                              spec=args.spec)
+    train_dataset = create_imagenet_dataset(traindir,
+                                            transform=train_transform,
+                                            nclass=args.nclass,
+                                            seed=args.dseed,
+                                            slct_type=args.slct_type,
+                                            load_memory=args.load_memory,
+                                            spec=args.spec)
+    val_dataset = create_imagenet_dataset(valdir,
+                                          transform=test_transform,
+                                          nclass=args.nclass,
+                                          seed=args.dseed,
+                                          load_memory=args.load_memory,
+                                          spec=args.spec)
 
     nclass = len(train_dataset.classes)
     assert nclass == len(val_dataset.classes)

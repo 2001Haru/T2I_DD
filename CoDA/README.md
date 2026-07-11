@@ -52,3 +52,16 @@ images remain in `generated_images/`; caption-conditioned images default to
 `generated_images_vlm_caption/`. The latter behavior can be overridden with
 `--generated_images_dirname` for ablations, and a different caption manifest
 can be selected with `--cluster_caption_file`.
+
+## ImageNet dataset.json layout
+
+CoDA automatically supports ImageNet sources stored as numbered image shards
+with a `dataset.json` label manifest, such as `00000/img00000000.png` paired
+with an ImageNet-1K class index. No image relocation or LMDB conversion is
+needed. Set `IMAGENET_TRAIN_FOLDER` in `scripts/CoDA.sh` directly to the
+directory that contains both the numbered folders and `dataset.json`.
+
+The manifest is treated as one split. Downstream evaluation still requires a
+separate validation root, configured by `IMAGENET_VAL_FOLDER`; it may use the
+same `dataset.json` layout or the conventional `<wnid>/<image>` layout. Do not
+point the validation setting at the training manifest.

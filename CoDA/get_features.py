@@ -12,7 +12,7 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.cuda.amp import autocast
 
-from data import ImageFolder
+from data import create_imagenet_dataset
 from Loadmodel import load_sdxl_and_refiner
 
 def setup_distributed(rank, world_size):
@@ -30,9 +30,13 @@ def get_distributed_loader(args, rank, world_size, return_path=False, mode_id_fi
     ])
 
     dataset_train = os.path.join(args.dataset_dir, "train")
-    dataset = ImageFolder(dataset_train, transform=transform, nclass=args.nclass,
-                          spec=args.spec, phase=args.phase, seed=0,
-                          return_origin=True, return_path=return_path, mode_id_file=mode_id_file)
+    if not os.path.isdir(dataset_train):
+        dataset_train = args.dataset_dir
+    dataset = create_imagenet_dataset(
+        dataset_train, transform=transform, nclass=args.nclass,
+        spec=args.spec, phase=args.phase, seed=0,
+        return_origin=True, return_path=return_path, mode_id_file=mode_id_file,
+    )
 
     sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=False)
 

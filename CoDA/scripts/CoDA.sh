@@ -2,7 +2,8 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 export PYTHONPATH="$SCRIPT_DIR:$PYTHONPATH"
 
-IMAGENET_FOLDER="/root/autodl-tmp/datasets/ImageNet"
+IMAGENET_TRAIN_FOLDER="/root/autodl-tmp/datasets/ImageNet"
+IMAGENET_VAL_FOLDER="/root/autodl-tmp/datasets/ImageNet/validation"
 MODEL_FOLDER="/root/autodl-tmp/model/SDXL-Refiner"
 VLM_MODEL="llava-hf/llava-1.5-7b-hf"
 
@@ -43,7 +44,7 @@ run_experiment() {
     if [[ "$run_step1" == "true" ]]; then
 
         python CoDA_main.py \
-            --dataset_dir "$IMAGENET_FOLDER" --local_model_path "$MODEL_FOLDER" \
+            --dataset_dir "$IMAGENET_TRAIN_FOLDER" --local_model_path "$MODEL_FOLDER" \
             --spec "$SPEC" \
             --IPC "$ipc" \
             --n_neighbors "$n_neighbors" --min_cluster_size "$size_min" \
@@ -57,7 +58,7 @@ run_experiment() {
     if [[ "$run_step2" == "true" ]]; then
 
         local train_data_path="./results/${SPEC}/Step-${timestep}/IPC-${ipc}/DF-${DF}-GTP-${GTP}-gamma-${gamma}/n_${n_neighbors}_s_${size_min}"
-        local val_data_path="$IMAGENET_FOLDER/validation"
+        local val_data_path="$IMAGENET_VAL_FOLDER"
 
         local use_real_images=${8:-true}
         if [[ "$use_real_images" == "true" ]]; then
