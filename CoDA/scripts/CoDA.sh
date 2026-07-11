@@ -13,7 +13,7 @@ MODEL_FOLDER="/linxi/models/CoDA/SDXL-Refiner"
 VLM_MODEL="/linxi/models/CoDA/llava-1.5-7b-hf"
 
 IMAGENET_TRAIN_FOLDER="/zhangchi/imagenet_512/images"
-IMAGENET_VAL_FOLDER="/linxi/dataset/imagenet/validation"
+IMAGENET_VAL_FOLDER="/linxi/dataset/imagenet/validation/val"
 
 # Keep the original CoDA pipeline as the default baseline. Enable both flags
 # for the cluster-aware caption method; existing complete captions are reused.
