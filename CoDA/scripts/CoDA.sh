@@ -2,10 +2,18 @@
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 export PYTHONPATH="$SCRIPT_DIR:$PYTHONPATH"
 
-IMAGENET_TRAIN_FOLDER="/root/autodl-tmp/datasets/ImageNet"
-IMAGENET_VAL_FOLDER="/root/autodl-tmp/datasets/ImageNet/validation"
-MODEL_FOLDER="/root/autodl-tmp/model/SDXL-Refiner"
-VLM_MODEL="llava-hf/llava-1.5-7b-hf"
+
+#IMAGENET_TRAIN_FOLDER="/root/autodl-tmp/datasets/ImageNet"
+#IMAGENET_VAL_FOLDER="/root/autodl-tmp/datasets/ImageNet/validation"
+#MODEL_FOLDER="/root/autodl-tmp/model/SDXL-Refiner"
+#VLM_MODEL="llava-hf/llava-1.5-7b-hf"
+
+
+MODEL_FOLDER="/linxi/models/CoDA/SDXL-Refiner"
+VLM_MODEL="/linxi/models/CoDA/llava-1.5-7b-hf"
+
+IMAGENET_TRAIN_FOLDER="/zhangchi/imagenet_512/images"
+IMAGENET_VAL_FOLDER="/linxi/dataset/imagenet/validation"
 
 # Keep the original CoDA pipeline as the default baseline. Enable both flags
 # for the cluster-aware caption method; existing complete captions are reused.
