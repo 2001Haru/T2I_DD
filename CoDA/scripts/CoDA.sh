@@ -26,8 +26,12 @@ GENERATE_CLUSTER_CAPTIONS="${GENERATE_CLUSTER_CAPTIONS:-false}"
 USE_CLUSTER_CAPTIONS="${USE_CLUSTER_CAPTIONS:-false}"
 OVERWRITE_CLUSTER_CAPTIONS="${OVERWRITE_CLUSTER_CAPTIONS:-false}"
 VLM_METHOD_TAG="${VLM_METHOD_TAG:-vlm_caption_class_focused}"
-VLM_CAPTION_INSTRUCTION="${VLM_CAPTION_INSTRUCTION:-Describe the physical appearance of the {class_name} in the image. Include details about its shape, posture, color, and any distinct features.}"
-SDXL_CAPTION_PROMPT_TEMPLATE="${SDXL_CAPTION_PROMPT_TEMPLATE:-An natural photo of a {class_name}, {caption}, centered object.}"
+if [[ -z "${VLM_CAPTION_INSTRUCTION:-}" ]]; then
+    VLM_CAPTION_INSTRUCTION='Describe the physical appearance of the {class_name} in the image. Include details about its shape, posture, color, and any distinct features.'
+fi
+if [[ -z "${SDXL_CAPTION_PROMPT_TEMPLATE:-}" ]]; then
+    SDXL_CAPTION_PROMPT_TEMPLATE='An natural photo of a {class_name}, {caption}, centered object.'
+fi
 RUN_GENERATION_PIPELINE="${RUN_GENERATION_PIPELINE:-true}"
 RUN_DOWNSTREAM_TRAINING="${RUN_DOWNSTREAM_TRAINING:-true}"
 
