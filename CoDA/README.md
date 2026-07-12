@@ -116,3 +116,6 @@ ratio `kappa_t`, which measures how much text guidance is cancelled by image
 guidance. The sweep defaults to generation seed 1 while retaining evaluation
 seed 0, then trains all three downstream classifiers. Set `REFERENCE_RUN_DIR`
 to the earlier seed-0 run directory to create a six-curve cross-seed plot.
+
+If generation completed but downstream training did not, resume only the three
+classifier runs with `RUN_ID=<completed run> bash scripts/train_guidance_run.sh`.
