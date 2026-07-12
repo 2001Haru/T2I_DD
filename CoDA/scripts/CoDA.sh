@@ -17,13 +17,13 @@ VLM_MODEL="/linxi/models/CoDA/llava-1.5-7b-hf"
 IMAGENET_TRAIN_FOLDER="/zhangchi/imagenet_512/images"
 IMAGENET_VAL_FOLDER="/linxi/dataset/imagenet/validation/val"
 
-# Keep the original CoDA pipeline as the default baseline. Enable both flags
-# for the cluster-aware caption method; existing complete captions are reused.
-CALCULATE_FEATURES=true
-CALCULATE_CLUSTER=true
-GENERATE_IMAGES=true
-GENERATE_CLUSTER_CAPTIONS=false
-USE_CLUSTER_CAPTIONS=false
+# Keep the original CoDA pipeline as the default baseline. External environment
+# variables take precedence, so stages can be safely reused after an interruption.
+CALCULATE_FEATURES="${CALCULATE_FEATURES:-true}"
+CALCULATE_CLUSTER="${CALCULATE_CLUSTER:-true}"
+GENERATE_IMAGES="${GENERATE_IMAGES:-true}"
+GENERATE_CLUSTER_CAPTIONS="${GENERATE_CLUSTER_CAPTIONS:-false}"
+USE_CLUSTER_CAPTIONS="${USE_CLUSTER_CAPTIONS:-false}"
 
 run_experiment() {
     local run_step1=${1:-true}
@@ -108,7 +108,7 @@ run_experiment() {
     fi
 }
 
-export CUDA_VISIBLE_DEVICES=0,1
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 
 ipc=10
 
