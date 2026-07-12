@@ -31,6 +31,10 @@ run_experiment() {
     local flag_caption=${5:-false}
     local use_cluster_captions=${6:-false}
     local run_step2=${7:-true}
+    local method_tag="coda_baseline"
+    if [[ "$use_cluster_captions" == "true" ]]; then
+        method_tag="vlm_caption"
+    fi
 
     local run_stages=""
     if [[ "$flag_features" == "true" ]]; then
@@ -51,6 +55,9 @@ run_experiment() {
 
     if [[ "$run_step1" == "true" ]]; then
 
+        local experiment_dir="./results/${SPEC}/Step-${timestep}/IPC-${ipc}/DF-${DF}-GTP-${GTP}-gamma-${gamma}/n_${n_neighbors}_s_${size_min}"
+        local timing_file="$experiment_dir/timings/${method_tag}.json"
+
         python CoDA_main.py \
             --dataset_dir "$IMAGENET_TRAIN_FOLDER" --local_model_path "$MODEL_FOLDER" \
             --spec "$SPEC" \
@@ -59,6 +66,7 @@ run_experiment() {
             --cluster_detial --cluster_logger \
             --sample_step "$timestep" --denoising_factor "$DF" --guideTPercent "$GTP" --CoDA_guidance_scale "$gamma" \
             --cluster_caption_model_path "$VLM_MODEL" \
+            --timing_file "$timing_file" --experiment_method "$method_tag" \
             $run_stages
 
     fi
@@ -66,6 +74,7 @@ run_experiment() {
     if [[ "$run_step2" == "true" ]]; then
 
         local train_data_path="./results/${SPEC}/Step-${timestep}/IPC-${ipc}/DF-${DF}-GTP-${GTP}-gamma-${gamma}/n_${n_neighbors}_s_${size_min}"
+        local timing_file="$train_data_path/timings/${method_tag}.json"
         local val_data_path="$IMAGENET_VAL_FOLDER"
 
         local use_real_images=${8:-true}
@@ -79,14 +88,21 @@ run_experiment() {
             fi
         fi
 
-        local train_save_dir="./trained_results/ipc${ipc}/n_${n_neighbors}_s_${size_min}/step-$timestep-DF-$DF/GTP-$GTP-gamma-$gamma"
+        local train_save_dir="./trained_results/ipc${ipc}/n_${n_neighbors}_s_${size_min}/step-$timestep-DF-$DF/GTP-$GTP-gamma-$gamma/${method_tag}"
 
         echo "==> Testing with ResNet-AP 10..."
         python ./test/train.py --dataset_dir "$train_data_path" "$val_data_path" \
             -d imagenet --spec "$SPEC" --nclass 10  --size 256 --ipc "$ipc" \
             -n resnet_ap --depth 10  --save-dir "$train_save_dir-resnet_ap"  \
+            --timing_file "$timing_file" --experiment_method "$method_tag" \
             --workers 12 \
             --n_neighbors "$n_neighbors" --min_cluster_size "$size_min" --tag test
+
+        local baseline_timing="$train_data_path/timings/coda_baseline.json"
+        local caption_timing="$train_data_path/timings/vlm_caption.json"
+        if [[ -f "$baseline_timing" && -f "$caption_timing" ]]; then
+            python summarize_timings.py --baseline "$baseline_timing" --caption "$caption_timing"
+        fi
     fi
 }
 

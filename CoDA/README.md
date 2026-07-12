@@ -65,3 +65,15 @@ The manifest is treated as one split. Downstream evaluation still requires a
 separate validation root, configured by `IMAGENET_VAL_FOLDER`; it may use the
 same `dataset.json` layout or the conventional `<wnid>/<image>` layout. Do not
 point the validation setting at the training manifest.
+
+## Timing and isolated outputs
+
+Each run writes a method-specific timing record under
+`results/.../timings/coda_baseline.json` or
+`results/.../timings/vlm_caption.json`. Timings include feature extraction,
+clustering, caption generation, synthetic image generation, and downstream
+training. After both methods have completed, `scripts/CoDA.sh` prints a JSON
+comparison that reports caption time relative to baseline generation time.
+
+Downstream checkpoints and logs are isolated under method-specific directories
+in `trained_results/.../coda_baseline-*` and `trained_results/.../vlm_caption-*`.

@@ -145,6 +145,8 @@ parser.add_argument('--verbose',
 parser.add_argument('-j', '--workers', default=4, type=int, help='number of data loading workers')
 parser.add_argument('--save_ckpt', type=str2bool, default=False)
 parser.add_argument('--save-dir', type=str, default=None)
+parser.add_argument('--timing_file', type=str, default=None, help='Shared experiment timing JSON file.')
+parser.add_argument('--experiment_method', type=str, default='coda_baseline', help='Method label for timing output.')
 parser.add_argument('--test', action='store_true', help='for debugging, do not save results')
 parser.add_argument('--time', action='store_true', help='measuring time for each step')
 

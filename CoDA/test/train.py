@@ -1,5 +1,6 @@
 # original code: https://github.com/dyhan0920/PyramidNet-PyTorch/blob/master/train.py
 import os
+import sys
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 import numpy as np
 import torch
@@ -16,6 +17,11 @@ import time
 from tqdm import tqdm
 import warnings
 warnings.filterwarnings("ignore")
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+from experiment_timing import record_stage_timing
 
 def define_model(args, nclass, logger=None, size=None):
     """Define neural network models
@@ -358,4 +364,18 @@ if __name__ == '__main__':
     os.makedirs(args.save_dir, exist_ok=True)
     logger = Logger(args.save_dir)
 
+    stage_start = time.perf_counter()
     main(args, logger, args.repeat)
+    elapsed_seconds = time.perf_counter() - stage_start
+    record_stage_timing(
+        args.timing_file,
+        args.experiment_method,
+        "downstream_training",
+        elapsed_seconds,
+        metadata={
+            "architecture": f"{args.net_type}-{args.depth}",
+            "epochs": args.epochs,
+            "visible_gpu_count": torch.cuda.device_count(),
+        },
+    )
+    print(f"[Timing] downstream_training: {elapsed_seconds:.2f} seconds")

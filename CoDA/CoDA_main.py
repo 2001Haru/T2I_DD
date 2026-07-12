@@ -3,6 +3,7 @@ import os
 import argparse
 import copy
 import pickle
+from time import perf_counter
 
 import torch
 import numpy as np
@@ -19,6 +20,7 @@ from get_features import calculate_features_multiprocess
 from postprocess import _inner_print, hdbscan_post
 from generated import  generate_images_multi_gpu
 from cluster_caption import generate_cluster_captions, load_cluster_captions
+from experiment_timing import record_stage_timing
 
 import warnings
 warnings.filterwarnings("ignore", module='sklearn')
@@ -28,6 +30,31 @@ def save_clusters(data, file_path):
     with open(file_path, "wb") as f:
         pickle.dump(data, f)
     print(f"Clusters centers saved to: {file_path}")
+
+
+def _timing_metadata(args):
+    return {
+        "spec": args.spec,
+        "ipc": args.IPC,
+        "n_neighbors": args.n_neighbors,
+        "min_cluster_size": args.min_cluster_size,
+        "sample_step": args.sample_step,
+        "denoising_factor": args.denoising_factor,
+        "guide_t_percent": args.guideTPercent,
+        "coda_guidance_scale": args.CoDA_guidance_scale,
+    }
+
+
+def _record_stage(args, stage, start_time):
+    elapsed_seconds = perf_counter() - start_time
+    record_stage_timing(
+        args.timing_file,
+        args.experiment_method,
+        stage,
+        elapsed_seconds,
+        metadata=_timing_metadata(args),
+    )
+    print(f"[Timing] {stage}: {elapsed_seconds:.2f} seconds")
 
 def get_class_info(args):
     with open('./misc/class_indices.txt', 'r') as fp:
@@ -94,12 +121,15 @@ def main(args):
 
     # region Encode the original dataset using VAE.
     if args.calcu_features:
+        stage_start = perf_counter()
         print(f"Getting features from scratch!")
         calculate_features_multiprocess(args)
+        _record_stage(args, "feature_extraction", stage_start)
     # endregion
 
     # region Perform clustering in the VAE latent space to identify IPC representative samples, forming set R.
     if args.calcu_cluster:
+        stage_start = perf_counter()
         log_file_path = args.log_file_path
         if args.cluster_detial and args.cluster_logger:
             with open(log_file_path, 'w') as f:
@@ -218,13 +248,17 @@ def main(args):
             del clusters_centers
             del original_features_per_class
             del original_paths
+        _record_stage(args, "clustering", stage_start)
     # endregion
 
     # region Use set R to guide SDXL in generating images, obtaining the final set G.
     if args.generate_cluster_captions:
+        stage_start = perf_counter()
         generate_cluster_captions(args, sel_classes)
+        _record_stage(args, "caption_generation", stage_start)
 
     if args.generate_images:
+        stage_start = perf_counter()
         # Load and merge all the clusters_centers chunk
         clusters_centers = {}
         num_chunks = args.nclass // 10
@@ -257,6 +291,7 @@ def main(args):
         args._num_gpus = num_gpus
 
         generate_images_multi_gpu(args, clusters_centers)
+        _record_stage(args, "synthetic_generation", stage_start)
     # endregion
 
 def get_args():
@@ -265,6 +300,8 @@ def get_args():
     parser.add_argument("--program_path", type=str, default='./', help='Base Dir')
     parser.add_argument('--dataset_dir', type=str, default='/root/autodl-tmp/datasets/ImageNet', help='ImageNet Dir')
     parser.add_argument('--local_model_path', type=str, default='/root/autodl-tmp/model/SDXL-Refiner', help='Model Dir')
+    parser.add_argument('--timing_file', type=str, default=None, help='JSON file for persistent stage timings.')
+    parser.add_argument('--experiment_method', type=str, default=None, help='Method label written to the timing record.')
     parser.add_argument("--seed",  type=int, default=0)
     parser.add_argument("--phase", type=int, default=0)
 
@@ -361,6 +398,10 @@ def get_args():
         args.generated_images_dirname = (
             "generated_images_vlm_caption" if args.use_cluster_captions else "generated_images"
         )
+    if args.experiment_method is None:
+        args.experiment_method = "vlm_caption" if args.use_cluster_captions else "coda_baseline"
+    if args.timing_file is None:
+        args.timing_file = os.path.join(args.save_dir, "timings", f"{args.experiment_method}.json")
 
     if args.use_cluster_captions:
         required_template_fields = {"{class_name}", "{caption}"}
