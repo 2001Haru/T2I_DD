@@ -2,6 +2,11 @@
 import os
 import sys
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -18,9 +23,6 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings("ignore")
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT)
 from experiment_timing import record_stage_timing
 
 def define_model(args, nclass, logger=None, size=None):
