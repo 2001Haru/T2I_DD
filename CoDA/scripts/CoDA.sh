@@ -1,4 +1,6 @@
 #nvidia-smi
+set -euo pipefail
+
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 export PYTHONPATH="$SCRIPT_DIR:$PYTHONPATH"
 
@@ -106,7 +108,7 @@ run_experiment() {
     fi
 }
 
-export CUDA_VISIBLE_DEVICES=0,1,2,3
+export CUDA_VISIBLE_DEVICES=0,1
 
 ipc=10
 

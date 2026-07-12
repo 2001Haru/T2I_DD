@@ -200,6 +200,7 @@ def generate_images_single_gpu(gpu_id, args, clusters_centers, my_assignments, r
         print(f"Error in GPU {gpu_id}: {e}")
         import traceback
         traceback.print_exc()
+        raise
 
 
 def generate_images_multi_gpu(args, clusters_centers):
@@ -258,4 +259,9 @@ def generate_images_multi_gpu(args, clusters_centers):
     for p in processes:
         p.join()
 
-    # print("All GPU processes completed")
+    failed_gpus = [gpu_id for gpu_id, process in enumerate(processes) if process.exitcode != 0]
+    if failed_gpus:
+        raise RuntimeError(
+            f"Synthetic generation failed on GPU(s): {failed_gpus}. "
+            "No downstream training should be started for this run."
+        )

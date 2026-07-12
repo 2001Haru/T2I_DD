@@ -77,3 +77,11 @@ comparison that reports caption time relative to baseline generation time.
 
 Downstream checkpoints and logs are isolated under method-specific directories
 in `trained_results/.../coda_baseline-*` and `trained_results/.../vlm_caption-*`.
+
+## Model download validation
+
+`MODEL_FOLDER` must contain complete Diffusers repositories at
+`sdxl-base/` and `sdxl-refiner/`, each including `model_index.json`. CoDA now
+stops before generation when either directory is partial, and
+`scripts/CoDA.sh` stops immediately after any failed stage so invalid or
+incomplete synthetic data is never passed to downstream training.

@@ -8,6 +8,18 @@ from CoDA_SDXLRefinerPipeline import CoDA_Refiner
 
 model_type = torch.float16
 
+
+def _require_complete_pipeline(model_path, model_name, allowed_entries=()):
+    """Fail early on partial Hugging Face downloads instead of loading mixed files."""
+    model_index_path = os.path.join(model_path, "model_index.json")
+    entries = set(os.listdir(model_path)) if os.path.isdir(model_path) else set()
+    if entries and not os.path.isfile(model_index_path) and not entries.issubset(set(allowed_entries)):
+        raise FileNotFoundError(
+            f"{model_name} is incomplete at {model_path}: missing model_index.json. "
+            "Download the complete repository into this exact directory before running CoDA."
+        )
+
+
 def load_sdxl_and_refiner(args, VAE16_ONLY=False, VAEFIX=False ):
 
     local_model_path = args.local_model_path
@@ -33,8 +45,9 @@ def load_sdxl_and_refiner(args, VAE16_ONLY=False, VAEFIX=False ):
             print(f"SDXL VAE16 fix: {VAEFIX} model saved to: {sdxl_vae_path}")
         return vae.eval()
 
-    unet_path = os.path.join(sdxl_base_path, "unet")
-    if os.path.exists(sdxl_base_path) and os.path.isdir(unet_path):
+    # The feature-extraction stage may already have cached only the VAE here.
+    _require_complete_pipeline(sdxl_base_path, "SDXL Base", allowed_entries=("vaefixfp16",))
+    if os.path.isfile(os.path.join(sdxl_base_path, "model_index.json")):
         print(f"Loading SDXL base model from local path: {sdxl_base_path}")
         base_pipeline = CoDA_SDXL.from_pretrained(
             sdxl_base_path,
@@ -75,7 +88,8 @@ def load_sdxl_and_refiner(args, VAE16_ONLY=False, VAEFIX=False ):
         use_karras_sigmas=True
     )
 
-    if os.path.exists(sdxl_refiner_path) and os.listdir(sdxl_refiner_path):
+    _require_complete_pipeline(sdxl_refiner_path, "SDXL Refiner")
+    if os.path.isfile(os.path.join(sdxl_refiner_path, "model_index.json")):
         print(f"Loading SDXL refiner from local path: {sdxl_refiner_path}")
         refiner = CoDA_Refiner.from_pretrained(
             sdxl_refiner_path,
