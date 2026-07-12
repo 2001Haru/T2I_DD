@@ -85,3 +85,16 @@ in `trained_results/.../coda_baseline-*` and `trained_results/.../vlm_caption-*`
 stops before generation when either directory is partial, and
 `scripts/CoDA.sh` stops immediately after any failed stage so invalid or
 incomplete synthetic data is never passed to downstream training.
+
+## Class-focused caption prompts
+
+The current caption variant explicitly names the target class when querying
+LLaVA and asks only for its physical appearance. The resulting SDXL prompt is
+`An natural photo of a {class_name}, {caption}, centered object.`. Runs from
+`scripts/CoDA.sh` use the isolated method tag `vlm_caption_class_focused`, so
+captions, generated images, timings, and classifier outputs do not overwrite
+the earlier generic-caption ablation.
+
+Set `RUN_DOWNSTREAM_TRAINING=false` and `GENERATE_IMAGES=false` to generate and
+inspect captions before committing GPU time to SDXL generation and classifier
+training.

@@ -254,7 +254,7 @@ def main(args):
     # region Use set R to guide SDXL in generating images, obtaining the final set G.
     if args.generate_cluster_captions:
         stage_start = perf_counter()
-        generate_cluster_captions(args, sel_classes)
+        generate_cluster_captions(args, sel_classes, class_id_to_name)
         _record_stage(args, "caption_generation", stage_start)
 
     if args.generate_images:
@@ -352,12 +352,15 @@ def get_args():
     )
     parser.add_argument(
         "--cluster_caption_instruction", type=str,
-        default="Describe the main subject, its visual attributes, pose, and scene in one concise factual sentence.",
-        help="Instruction supplied to LLaVA for every representative image."
+        default=(
+            "Describe the physical appearance of the {class_name} in the image. "
+            "Include details about its shape, posture, color, and any distinct features."
+        ),
+        help="Class-aware instruction template supplied to LLaVA. Must contain {class_name}."
     )
     parser.add_argument(
         "--cluster_caption_prompt_template", type=str,
-        default="A high-quality natural image of a {class_name}. {caption}",
+        default="An natural image of a {class_name}, {caption}, centered object.",
         help="SDXL prompt template used with --use_cluster_captions. Must contain {class_name} and {caption}."
     )
     parser.add_argument(
@@ -412,6 +415,8 @@ def get_args():
             raise ValueError(
                 "--cluster_caption_prompt_template must contain " + ", ".join(missing_template_fields)
             )
+    if args.generate_cluster_captions and "{class_name}" not in args.cluster_caption_instruction:
+        raise ValueError("--cluster_caption_instruction must contain {class_name}")
 
     os.makedirs(args.specific_cluster_dir, exist_ok=True)
     os.makedirs(args.plot_dir, exist_ok=True)

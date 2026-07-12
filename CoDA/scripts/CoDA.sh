@@ -24,6 +24,12 @@ CALCULATE_CLUSTER="${CALCULATE_CLUSTER:-true}"
 GENERATE_IMAGES="${GENERATE_IMAGES:-true}"
 GENERATE_CLUSTER_CAPTIONS="${GENERATE_CLUSTER_CAPTIONS:-false}"
 USE_CLUSTER_CAPTIONS="${USE_CLUSTER_CAPTIONS:-false}"
+OVERWRITE_CLUSTER_CAPTIONS="${OVERWRITE_CLUSTER_CAPTIONS:-false}"
+VLM_METHOD_TAG="${VLM_METHOD_TAG:-vlm_caption_class_focused}"
+VLM_CAPTION_INSTRUCTION="${VLM_CAPTION_INSTRUCTION:-Describe the physical appearance of the {class_name} in the image. Include details about its shape, posture, color, and any distinct features.}"
+SDXL_CAPTION_PROMPT_TEMPLATE="${SDXL_CAPTION_PROMPT_TEMPLATE:-An natural photo of a {class_name}, {caption}, centered object.}"
+RUN_GENERATION_PIPELINE="${RUN_GENERATION_PIPELINE:-true}"
+RUN_DOWNSTREAM_TRAINING="${RUN_DOWNSTREAM_TRAINING:-true}"
 
 run_experiment() {
     local run_step1=${1:-true}
@@ -34,8 +40,10 @@ run_experiment() {
     local use_cluster_captions=${6:-false}
     local run_step2=${7:-true}
     local method_tag="coda_baseline"
+    local generated_images_dirname="generated_images"
     if [[ "$use_cluster_captions" == "true" ]]; then
-        method_tag="vlm_caption"
+        method_tag="$VLM_METHOD_TAG"
+        generated_images_dirname="generated_images_${method_tag}"
     fi
 
     local run_stages=""
@@ -54,11 +62,15 @@ run_experiment() {
     if [[ "$use_cluster_captions" == "true" ]]; then
         run_stages="$run_stages --use_cluster_captions"
     fi
+    if [[ "$OVERWRITE_CLUSTER_CAPTIONS" == "true" ]]; then
+        run_stages="$run_stages --overwrite_cluster_captions"
+    fi
 
     if [[ "$run_step1" == "true" ]]; then
 
         local experiment_dir="./results/${SPEC}/Step-${timestep}/IPC-${ipc}/DF-${DF}-GTP-${GTP}-gamma-${gamma}/n_${n_neighbors}_s_${size_min}"
         local timing_file="$experiment_dir/timings/${method_tag}.json"
+        local caption_file="$experiment_dir/cluster_captions_${method_tag}.json"
 
         python CoDA_main.py \
             --dataset_dir "$IMAGENET_TRAIN_FOLDER" --local_model_path "$MODEL_FOLDER" \
@@ -68,6 +80,10 @@ run_experiment() {
             --cluster_detial --cluster_logger \
             --sample_step "$timestep" --denoising_factor "$DF" --guideTPercent "$GTP" --CoDA_guidance_scale "$gamma" \
             --cluster_caption_model_path "$VLM_MODEL" \
+            --cluster_caption_file "$caption_file" \
+            --cluster_caption_instruction "$VLM_CAPTION_INSTRUCTION" \
+            --cluster_caption_prompt_template "$SDXL_CAPTION_PROMPT_TEMPLATE" \
+            --generated_images_dirname "$generated_images_dirname" \
             --timing_file "$timing_file" --experiment_method "$method_tag" \
             $run_stages
 
@@ -83,11 +99,7 @@ run_experiment() {
         if [[ "$use_real_images" == "true" ]]; then
             train_data_path+="/real_images"
         else
-            if [[ "$use_cluster_captions" == "true" ]]; then
-                train_data_path+="/generated_images_vlm_caption"
-            else
-                train_data_path+="/generated_images"
-            fi
+            train_data_path+="/$generated_images_dirname"
         fi
 
         local train_save_dir="./trained_results/ipc${ipc}/n_${n_neighbors}_s_${size_min}/step-$timestep-DF-$DF/GTP-$GTP-gamma-$gamma/${method_tag}"
@@ -101,7 +113,7 @@ run_experiment() {
             --n_neighbors "$n_neighbors" --min_cluster_size "$size_min" --tag test
 
         local baseline_timing="$train_data_path/timings/coda_baseline.json"
-        local caption_timing="$train_data_path/timings/vlm_caption.json"
+        local caption_timing="$train_data_path/timings/${VLM_METHOD_TAG}.json"
         if [[ -f "$baseline_timing" && -f "$caption_timing" ]]; then
             python summarize_timings.py --baseline "$baseline_timing" --caption "$caption_timing"
         fi
@@ -124,7 +136,7 @@ gamma=0.05
 SPEC_LIST="imageA"
 for SPEC in $SPEC_LIST; do
     #                Step1  cal_features cal_cluster generate captions use_captions Step2 use_real_images
-    run_experiment   true       "$CALCULATE_FEATURES" "$CALCULATE_CLUSTER" "$GENERATE_IMAGES" "$GENERATE_CLUSTER_CAPTIONS" "$USE_CLUSTER_CAPTIONS" true false
+    run_experiment   "$RUN_GENERATION_PIPELINE" "$CALCULATE_FEATURES" "$CALCULATE_CLUSTER" "$GENERATE_IMAGES" "$GENERATE_CLUSTER_CAPTIONS" "$USE_CLUSTER_CAPTIONS" "$RUN_DOWNSTREAM_TRAINING" false
 done
 
 # cd /root/autodl-tmp/CoDA

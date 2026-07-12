@@ -14,7 +14,7 @@ def _caption_file_payload(args):
         "metadata": {
             "format_version": 1,
             "model": args.cluster_caption_model_path,
-            "instruction": args.cluster_caption_instruction,
+            "instruction_template": args.cluster_caption_instruction,
             "max_new_tokens": args.cluster_caption_max_new_tokens,
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
         },
@@ -126,13 +126,33 @@ def _generate_caption(model, processor, dtype, device, image_path, instruction, 
     return " ".join(caption.split())
 
 
-def generate_cluster_captions(args, sel_classes):
+def _validate_caption_config(path, args):
+    with open(path, "r", encoding="utf-8") as file:
+        payload = json.load(file)
+    metadata = payload.get("metadata", {})
+    expected = {
+        "model": args.cluster_caption_model_path,
+        "instruction_template": args.cluster_caption_instruction,
+        "max_new_tokens": args.cluster_caption_max_new_tokens,
+    }
+    mismatches = [
+        key for key, value in expected.items() if metadata.get(key) != value
+    ]
+    if mismatches:
+        raise ValueError(
+            f"Caption configuration changed for {path}: {', '.join(mismatches)}. "
+            "Use a new --cluster_caption_file or pass --overwrite_cluster_captions."
+        )
+
+
+def generate_cluster_captions(args, sel_classes, class_id_to_name):
     """Caption CoDA's saved representative images and write a reusable JSON manifest."""
     if not torch.cuda.is_available() and args.cluster_caption_device.startswith("cuda"):
         raise RuntimeError("--cluster_caption_device requests CUDA, but no CUDA device is available.")
 
     caption_path = args.cluster_caption_file
     if os.path.isfile(caption_path) and not args.overwrite_cluster_captions:
+        _validate_caption_config(caption_path, args)
         captions = load_cluster_captions(caption_path, sel_classes, args.IPC)
         print(f"Using existing complete cluster captions: {caption_path}")
         return captions
@@ -143,11 +163,16 @@ def generate_cluster_captions(args, sel_classes):
     payload = _caption_file_payload(args)
 
     tasks = [
-        (class_id, shift, os.path.join(args.save_dir, "real_images", class_id, f"{shift}.png"))
+        (
+            class_id,
+            class_id_to_name[class_id].split(',')[0].strip(),
+            shift,
+            os.path.join(args.save_dir, "real_images", class_id, f"{shift}.png"),
+        )
         for class_id in sel_classes
         for shift in range(args.IPC)
     ]
-    missing_images = [path for _, _, path in tasks if not os.path.isfile(path)]
+    missing_images = [path for _, _, _, path in tasks if not os.path.isfile(path)]
     if missing_images:
         preview = ", ".join(missing_images[:5])
         suffix = " ..." if len(missing_images) > 5 else ""
@@ -156,14 +181,15 @@ def generate_cluster_captions(args, sel_classes):
             "Run --calcu_cluster with the same experiment settings first."
         )
 
-    for class_id, shift, image_path in tqdm(tasks, desc="Captioning cluster representatives"):
+    for class_id, class_name, shift, image_path in tqdm(tasks, desc="Captioning cluster representatives"):
+        instruction = args.cluster_caption_instruction.format(class_name=class_name)
         caption = _generate_caption(
             model=model,
             processor=processor,
             dtype=dtype,
             device=device,
             image_path=image_path,
-            instruction=args.cluster_caption_instruction,
+            instruction=instruction,
             max_new_tokens=args.cluster_caption_max_new_tokens,
         )
         payload["captions"].setdefault(class_id, {})[str(shift)] = caption
