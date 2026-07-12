@@ -111,4 +111,8 @@ never overwritten.
 The recorded directions are `g_text = epsilon_conditional -
 epsilon_unconditional` and `g_img = delta_epsilon_CoDA`, both in SDXL noise
 prediction space before CFG scaling. The diagnostics include cosine similarity
-and `q_t = ||g_text||_2 / ||g_img||_2`.
+and `q_t = ||g_text||_2 / ||g_img||_2`, as well as the negative projection
+ratio `kappa_t`, which measures how much text guidance is cancelled by image
+guidance. The sweep defaults to generation seed 1 while retaining evaluation
+seed 0, then trains all three downstream classifiers. Set `REFERENCE_RUN_DIR`
+to the earlier seed-0 run directory to create a six-curve cross-seed plot.

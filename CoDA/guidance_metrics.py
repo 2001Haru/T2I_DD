@@ -19,6 +19,7 @@ RAW_FIELDS = [
     "image_norm_l2",
     "q_text_over_image",
     "cosine_similarity",
+    "conflict_projection_ratio",
 ]
 
 
@@ -69,6 +70,7 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
     q_values = np.asarray([_float(record, "q_text_over_image") for record in records])
     text_norms = np.asarray([_float(record, "text_norm_l2") for record in records])
     image_norms = np.asarray([_float(record, "image_norm_l2") for record in records])
+    conflict_ratios = np.asarray([_float(record, "conflict_projection_ratio") for record in records])
     step_indices = sorted({int(record["step_index"]) for record in records})
 
     per_step = []
@@ -76,6 +78,7 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
         step_records = [record for record in records if int(record["step_index"]) == step_index]
         step_cosine = np.asarray([_float(record, "cosine_similarity") for record in step_records])
         step_q = np.asarray([_float(record, "q_text_over_image") for record in step_records])
+        step_conflict = np.asarray([_float(record, "conflict_projection_ratio") for record in step_records])
         per_step.append({
             "step_index": step_index,
             "timestep": int(step_records[0]["timestep"]),
@@ -87,14 +90,23 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
             "q_median": float(np.median(step_q)),
             "q_p25": float(np.percentile(step_q, 25)),
             "q_p75": float(np.percentile(step_q, 75)),
+            "conflict_projection_ratio_mean": float(np.mean(step_conflict)),
+            "conflict_projection_ratio_median": float(np.median(step_conflict)),
+            "conflict_projection_ratio_p25": float(np.percentile(step_conflict, 25)),
+            "conflict_projection_ratio_p75": float(np.percentile(step_conflict, 75)),
         })
 
+    norm_correlation = None
+    if np.std(text_norms) > 0.0 and np.std(image_norms) > 0.0:
+        norm_correlation = float(np.corrcoef(text_norms, image_norms)[0, 1])
+
     summary = {
-        "format_version": 1,
+        "format_version": 2,
         "definition": {
             "g_text": "epsilon_conditional - epsilon_unconditional",
             "g_img": "CoDA delta_epsilon_text",
             "q_t": "L2(g_text) / L2(g_img)",
+            "kappa_t": "max(0, -dot(g_text, g_img)) / L2(g_text)^2",
             "space": "SDXL noise-prediction space before CFG scaling",
         },
         "metadata": metadata,
@@ -111,6 +123,11 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
             "q_p75": float(np.percentile(q_values, 75)),
             "text_norm_mean": float(np.mean(text_norms)),
             "image_norm_mean": float(np.mean(image_norms)),
+            "text_image_norm_pearson_correlation": norm_correlation,
+            "conflict_projection_ratio_mean": float(np.mean(conflict_ratios)),
+            "conflict_projection_ratio_median": float(np.median(conflict_ratios)),
+            "conflict_projection_ratio_p25": float(np.percentile(conflict_ratios, 25)),
+            "conflict_projection_ratio_p75": float(np.percentile(conflict_ratios, 75)),
         },
         "per_step": per_step,
     }
@@ -124,8 +141,11 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
     q_median = np.asarray([item["q_median"] for item in per_step])
     q_p25 = np.asarray([item["q_p25"] for item in per_step])
     q_p75 = np.asarray([item["q_p75"] for item in per_step])
+    conflict_median = np.asarray([item["conflict_projection_ratio_median"] for item in per_step])
+    conflict_p25 = np.asarray([item["conflict_projection_ratio_p25"] for item in per_step])
+    conflict_p75 = np.asarray([item["conflict_projection_ratio_p75"] for item in per_step])
 
-    fig, axes = plt.subplots(2, 1, figsize=(9, 8), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(9, 11), sharex=True)
     axes[0].plot(x, cosine_mean, marker="o", label="mean cosine")
     axes[0].fill_between(x, cosine_mean - cosine_std, cosine_mean + cosine_std, alpha=0.2)
     axes[0].axhline(0.0, color="black", linewidth=1, linestyle="--")
@@ -137,14 +157,18 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
     axes[1].fill_between(x, q_p25, q_p75, color="tab:orange", alpha=0.2, label="IQR")
     axes[1].axhline(1.0, color="black", linewidth=1, linestyle="--")
     axes[1].set_yscale("log")
-    axes[1].set_xlabel("Denoising step index (early to late)")
     axes[1].set_ylabel("q = ||g_text|| / ||g_img||")
     axes[1].grid(alpha=0.25)
+    axes[2].plot(x, conflict_median, marker="o", color="tab:red", label="median kappa")
+    axes[2].fill_between(x, conflict_p25, conflict_p75, color="tab:red", alpha=0.2, label="IQR")
+    axes[2].set_xlabel("Denoising step index (early to late)")
+    axes[2].set_ylabel("kappa: text cancellation ratio")
+    axes[2].grid(alpha=0.25)
     fig.tight_layout()
     fig.savefig(os.path.join(metrics_dir, "guidance_over_steps.png"), dpi=180)
     plt.close(fig)
 
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
     axes[0].hist(cosine, bins=40, color="tab:blue", alpha=0.85)
     axes[0].axvline(0.0, color="black", linewidth=1, linestyle="--")
     axes[0].set_xlabel("cos(g_text, g_img)")
@@ -165,6 +189,10 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
     axes[1].set_xlabel("q = ||g_text|| / ||g_img||")
     axes[1].set_ylabel("Count")
     axes[1].set_title("Relative guidance strength")
+    axes[2].hist(conflict_ratios, bins=40, color="tab:red", alpha=0.85)
+    axes[2].set_xlabel("kappa: text cancellation ratio")
+    axes[2].set_ylabel("Count")
+    axes[2].set_title("Negative projection strength")
     fig.tight_layout()
     fig.savefig(os.path.join(metrics_dir, "guidance_distributions.png"), dpi=180)
     plt.close(fig)

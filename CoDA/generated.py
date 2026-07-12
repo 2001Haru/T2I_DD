@@ -298,6 +298,7 @@ def generate_images_multi_gpu(args, clusters_centers):
                 "cfg_guidance_scale": args.cfg_guidance_scale,
                 "coda_guidance_scale": args.CoDA_guidance_scale,
                 "guide_t_percent": args.guideTPercent,
+                "seed": args.seed,
                 "prompt_template": (
                     args.cluster_caption_prompt_template
                     if args.use_cluster_captions else "{class_name}"

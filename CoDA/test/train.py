@@ -70,7 +70,7 @@ def define_model(args, nclass, logger=None, size=None):
 def train_on_gpu(gpu_id, args, return_dict):
     torch.cuda.set_device(gpu_id)
 
-    seed_offset = 0
+    seed_offset = args.seed
     np.random.seed(gpu_id + seed_offset)
     torch.manual_seed(gpu_id + seed_offset)
     torch.cuda.manual_seed(gpu_id + seed_offset)

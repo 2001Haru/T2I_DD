@@ -279,6 +279,8 @@ class CoDA_SDXL(StableDiffusionXLPipeline):
                         image_norm = torch.linalg.vector_norm(image_flat, dim=1)
                         cosine = torch.nn.functional.cosine_similarity(text_flat, image_flat, dim=1)
                         q_value = text_norm / image_norm.clamp_min(1e-12)
+                        dot_product = torch.sum(text_flat * image_flat, dim=1)
+                        conflict_projection_ratio = (-dot_product).clamp_min(0.0) / text_norm.square().clamp_min(1e-12)
                         guidance_metrics_callback({
                             "step_index": i,
                             "timestep": int(t.item()),
@@ -287,6 +289,7 @@ class CoDA_SDXL(StableDiffusionXLPipeline):
                             "image_norm_l2": float(image_norm[0].item()),
                             "q_text_over_image": float(q_value[0].item()),
                             "cosine_similarity": float(cosine[0].item()),
+                            "conflict_projection_ratio": float(conflict_projection_ratio[0].item()),
                         })
 
                 else:
