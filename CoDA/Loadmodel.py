@@ -53,6 +53,7 @@ def load_sdxl_and_refiner(args, VAE16_ONLY=False, VAEFIX=False ):
             sdxl_base_path,
             torch_dtype=model_type,
             use_safetensors=True,
+            variant="fp16",
         )
         if VAEFIX:
             print(f"Loading VAE fix from: {sdxl_vae_path}")
@@ -97,6 +98,7 @@ def load_sdxl_and_refiner(args, VAE16_ONLY=False, VAEFIX=False ):
             vae=base_pipeline.vae,
             torch_dtype=model_type,
             use_safetensors=True,
+            variant="fp16",
         )
     else:
         print("Downloading SDXL refiner from Hugging Face...")
