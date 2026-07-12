@@ -6,6 +6,7 @@ from PIL import Image
 import torch.multiprocessing as mp
 
 from Loadmodel import load_sdxl_and_refiner
+from guidance_metrics import finalize_guidance_metrics, write_worker_metrics
 
 import sys
 from contextlib import contextmanager
@@ -91,6 +92,7 @@ def generate_images_single_gpu(gpu_id, args, clusters_centers, my_assignments, r
         sel_classes = args._sel_classes
         class_id_to_name = args._class_id_to_name
         save_dir = os.path.join(args.save_dir, args.generated_images_dirname)
+        guidance_records = []
 
         base_seed = args.seed + gpu_id * 10000
 
@@ -127,6 +129,17 @@ def generate_images_single_gpu(gpu_id, args, clusters_centers, my_assignments, r
                             negative_prompt = None
                             prompt = _build_generation_prompt(args, sel_class, first_class_name, shift)
 
+                            def record_guidance_metrics(step_metrics):
+                                guidance_records.append({
+                                    "method": args.experiment_method,
+                                    "gpu_id": gpu_id,
+                                    "class_id": sel_class,
+                                    "class_name": first_class_name,
+                                    "sample_index": shift,
+                                    "image_seed": image_seed,
+                                    **step_metrics,
+                                })
+
                             ################################################################
                             # When DF=1.0, use only the SDXL Base Pipeline for generation.
                             ################################################################
@@ -147,6 +160,8 @@ def generate_images_single_gpu(gpu_id, args, clusters_centers, my_assignments, r
                                 }
                                 if args.CoDA_guidance_scale > 0.0:
                                     pipeline_kwargs["represent_latent"] = represent_latent
+                                if args.measure_guidance_conflict:
+                                    pipeline_kwargs["guidance_metrics_callback"] = record_guidance_metrics
 
                                 pipeline_output, final_latent = pipeline(**pipeline_kwargs)
 
@@ -171,6 +186,8 @@ def generate_images_single_gpu(gpu_id, args, clusters_centers, my_assignments, r
                                 }
                                 if args.CoDA_guidance_scale > 0.0:
                                     pipeline_kwargs["represent_latent"] = represent_latent
+                                if args.measure_guidance_conflict:
+                                    pipeline_kwargs["guidance_metrics_callback"] = record_guidance_metrics
                                 pipeline_output, final_latent_from_base = pipeline(**pipeline_kwargs)
                                 latent_image = pipeline_output.images
 
@@ -194,6 +211,8 @@ def generate_images_single_gpu(gpu_id, args, clusters_centers, my_assignments, r
 
                     progress_bar.update(1)
         progress_bar.close()
+        if args.measure_guidance_conflict:
+            write_worker_metrics(save_dir, gpu_id, guidance_records)
         print(f"GPU {gpu_id} completed all tasks")
 
     except Exception as e:
@@ -264,4 +283,24 @@ def generate_images_multi_gpu(args, clusters_centers):
         raise RuntimeError(
             f"Synthetic generation failed on GPU(s): {failed_gpus}. "
             "No downstream training should be started for this run."
+        )
+
+    if args.measure_guidance_conflict:
+        output_dir = os.path.join(args.save_dir, args.generated_images_dirname)
+        finalize_guidance_metrics(
+            output_dir,
+            num_gpus,
+            metadata={
+                "method": args.experiment_method,
+                "spec": args.spec,
+                "ipc": args.IPC,
+                "sample_step": args.sample_step,
+                "cfg_guidance_scale": args.cfg_guidance_scale,
+                "coda_guidance_scale": args.CoDA_guidance_scale,
+                "guide_t_percent": args.guideTPercent,
+                "prompt_template": (
+                    args.cluster_caption_prompt_template
+                    if args.use_cluster_captions else "{class_name}"
+                ),
+            },
         )

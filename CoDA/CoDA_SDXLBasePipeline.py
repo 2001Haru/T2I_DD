@@ -91,6 +91,7 @@ class CoDA_SDXL(StableDiffusionXLPipeline):
             represent_latent: torch.Tensor = None,
             guideTPercent: float = 0.5,
             CoDA_guidance_scale: float = 0.1,
+            guidance_metrics_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
         """
         Examples:
@@ -269,6 +270,24 @@ class CoDA_SDXL(StableDiffusionXLPipeline):
                     ##################################################################################################
                     delta_epsilon_text = - (sqrt_alpha_prod_t / sqrt_one_minus_alpha_prod_t) * pix_guide_mark
                     noise_pred_text = noise_pred_text_ori + delta_epsilon_text
+
+                    if guidance_metrics_callback is not None:
+                        text_direction = noise_pred_text_ori - noise_pred_uncond
+                        text_flat = text_direction.float().reshape(text_direction.shape[0], -1)
+                        image_flat = delta_epsilon_text.float().reshape(delta_epsilon_text.shape[0], -1)
+                        text_norm = torch.linalg.vector_norm(text_flat, dim=1)
+                        image_norm = torch.linalg.vector_norm(image_flat, dim=1)
+                        cosine = torch.nn.functional.cosine_similarity(text_flat, image_flat, dim=1)
+                        q_value = text_norm / image_norm.clamp_min(1e-12)
+                        guidance_metrics_callback({
+                            "step_index": i,
+                            "timestep": int(t.item()),
+                            "sigma": float(current_sigma_t_for_guidance.item()),
+                            "text_norm_l2": float(text_norm[0].item()),
+                            "image_norm_l2": float(image_norm[0].item()),
+                            "q_text_over_image": float(q_value[0].item()),
+                            "cosine_similarity": float(cosine[0].item()),
+                        })
 
                 else:
                     noise_pred_text = noise_pred_text_ori

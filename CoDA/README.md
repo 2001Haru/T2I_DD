@@ -98,3 +98,17 @@ the earlier generic-caption ablation.
 Set `RUN_DOWNSTREAM_TRAINING=false` and `GENERATE_IMAGES=false` to generate and
 inspect captions before committing GPU time to SDXL generation and classifier
 training.
+
+## Guidance conflict diagnostics
+
+Run `scripts/guidance_conflict_sweep.sh` to regenerate baseline, generic-caption
+v0, and class-focused-caption v1 with identical seeds while recording
+per-sample, per-step guidance measurements. Each timestamped run stores raw CSV
+values, JSON summaries, per-variant plots, and a combined comparison under
+`results/.../guidance_conflict_runs/<UTC timestamp>/`; earlier experiments are
+never overwritten.
+
+The recorded directions are `g_text = epsilon_conditional -
+epsilon_unconditional` and `g_img = delta_epsilon_CoDA`, both in SDXL noise
+prediction space before CFG scaling. The diagnostics include cosine similarity
+and `q_t = ||g_text||_2 / ||g_img||_2`.

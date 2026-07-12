@@ -327,6 +327,10 @@ def get_args():
     # For generate, the set G
     parser.add_argument("--generate_images",     action="store_true", default=False, help="Generate images.")
     parser.add_argument(
+        "--measure_guidance_conflict", action="store_true", default=False,
+        help="Save per-sample, per-step text/image guidance conflict metrics and plots."
+    )
+    parser.add_argument(
         "--generate_cluster_captions", action="store_true", default=False,
         help="Use LLaVA to caption the saved cluster representative images before generation."
     )
