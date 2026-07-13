@@ -148,3 +148,35 @@ To generate without classifier training, set
 ```bash
 RUN_ID=<completed projection run> bash scripts/train_projection_run.sh
 ```
+
+## Fixed ImageB validation experiment
+
+`scripts/imageB_projection_experiment.sh` uses the repository's predefined
+`misc/imagenet-b.txt` classes without resampling or manual filtering. It first
+validates train/validation counts and paths, computes ImageB features and
+clusters once, generates one focused-caption manifest, and runs the following
+matrix at generation seeds 0 and 1:
+
+- original CoDA baseline;
+- focused caption with projection alpha 0;
+- focused caption with projection alpha 0.5.
+
+Run the complete experiment with:
+
+```bash
+PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
+bash scripts/imageB_projection_experiment.sh
+```
+
+The timestamped outputs are stored under `results/imageB/.../imageB_runs/` and
+`trained_results/imageB_runs/`. Every classifier GPU/training seed writes its
+best-epoch `per_class_accuracy_best.json`; the method directory also contains
+`per_class_accuracy_all_seeds.json` with the per-class mean and standard
+deviation. The run's `summary/` directory contains the complete method table,
+paired improvements, and `per_class_comparison.csv`. If preparation already exists, reuse it with
+`CALCULATE_FEATURES=false CALCULATE_CLUSTER=false GENERATE_CAPTIONS=false`.
+Resume only downstream training with:
+
+```bash
+RUN_ID=<completed ImageB run> bash scripts/train_imageB_run.sh
+```

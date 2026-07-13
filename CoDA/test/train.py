@@ -1,6 +1,7 @@
 # original code: https://github.com/dyhan0920/PyramidNet-PyTorch/blob/master/train.py
 import os
 import sys
+import json
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,6 +25,82 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from experiment_timing import record_stage_timing
+
+
+def _imagenet_class_names():
+    class_ids_path = os.path.join(PROJECT_ROOT, "misc", "class_indices.txt")
+    class_names_path = os.path.join(PROJECT_ROOT, "misc", "class_names.txt")
+    with open(class_ids_path, "r", encoding="utf-8") as file:
+        class_ids = [line.strip() for line in file if line.strip()]
+    with open(class_names_path, "r", encoding="utf-8") as file:
+        class_names = [line.strip() for line in file]
+    return dict(zip(class_ids, class_names))
+
+
+def _save_per_class_accuracy(save_dir, epoch, top1, classes, class_correct, class_total):
+    name_by_id = _imagenet_class_names()
+    rows = []
+    for index, class_id in enumerate(classes):
+        total = int(class_total[index])
+        correct = int(class_correct[index])
+        rows.append({
+            "local_label": index,
+            "class_id": class_id,
+            "class_name": name_by_id.get(class_id, class_id),
+            "correct": correct,
+            "total": total,
+            "accuracy": 100.0 * correct / total if total else None,
+        })
+    payload = {
+        "best_epoch": int(epoch),
+        "overall_top1": float(top1),
+        "classes": rows,
+    }
+    path = os.path.join(save_dir, "per_class_accuracy_best.json")
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+    os.replace(tmp_path, path)
+
+
+def _aggregate_per_class_accuracy(save_dir, training_seeds):
+    runs = []
+    for training_seed in training_seeds:
+        path = f"{save_dir}_gpu{training_seed}/per_class_accuracy_best.json"
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"Missing per-class validation result: {path}")
+        with open(path, "r", encoding="utf-8") as file:
+            payload = json.load(file)
+        payload["training_seed"] = training_seed
+        runs.append(payload)
+
+    class_summary = []
+    for class_index in range(len(runs[0]["classes"])):
+        first = runs[0]["classes"][class_index]
+        accuracies = [run["classes"][class_index]["accuracy"] for run in runs]
+        class_summary.append({
+            "local_label": first["local_label"],
+            "class_id": first["class_id"],
+            "class_name": first["class_name"],
+            "accuracies": accuracies,
+            "mean": float(np.mean(accuracies)),
+            "std": float(np.std(accuracies, ddof=1)) if len(accuracies) > 1 else 0.0,
+        })
+
+    payload = {
+        "training_seeds": training_seeds,
+        "overall_top1": [run["overall_top1"] for run in runs],
+        "runs": runs,
+        "class_summary": class_summary,
+    }
+    os.makedirs(save_dir, exist_ok=True)
+    path = os.path.join(save_dir, "per_class_accuracy_all_seeds.json")
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+    os.replace(tmp_path, path)
 
 def define_model(args, nclass, logger=None, size=None):
     """Define neural network models
@@ -126,6 +203,10 @@ def main(args, logger, repeat=1):
     for p in processes:
         p.join()
 
+    failed_gpus = [gpu_id for gpu_id, process in enumerate(processes) if process.exitcode != 0]
+    if failed_gpus:
+        raise RuntimeError(f"Downstream training failed on GPU(s): {failed_gpus}")
+
     accuracies = []
     for gpu_id in range(num_gpus):
         if gpu_id in return_dict and return_dict[gpu_id] != 0.0:
@@ -147,6 +228,11 @@ def main(args, logger, repeat=1):
     log_file_path = os.path.join(args.save_dir, f'hard_log.txt')
     with open(log_file_path, 'w') as f:
         f.write(f"{final_result_str}")
+
+    _aggregate_per_class_accuracy(
+        args.save_dir,
+        [args.seed + gpu_id for gpu_id in range(num_gpus)],
+    )
 
     return accuracies
 
@@ -180,7 +266,9 @@ def train(args, model, train_loader, val_loader, plotter=None, logger=None, gpu_
                                           mixup=args.mixup)
 
         if epoch % args.epoch_print_freq == 0:
-            acc1, acc5, loss_val = validate(args, val_loader, model, criterion, epoch, logger)
+            acc1, acc5, loss_val, class_correct, class_total = validate(
+                args, val_loader, model, criterion, epoch, logger
+            )
 
             if plotter != None:
                 plotter.update(epoch, acc1_tr, acc1, loss_tr, loss_val)
@@ -189,6 +277,14 @@ def train(args, model, train_loader, val_loader, plotter=None, logger=None, gpu_
             if is_best:
                 best_acc1 = acc1
                 best_acc5 = acc5
+                _save_per_class_accuracy(
+                    args.save_dir,
+                    epoch,
+                    acc1,
+                    val_loader.dataset.classes,
+                    class_correct,
+                    class_total,
+                )
                 if logger != None and args.verbose == True:
                     logger(f'GPU {gpu_id} - Best accuracy (top-1 and 5): {best_acc1:.1f} {best_acc5:.1f}')
 
@@ -295,6 +391,9 @@ def validate(args, val_loader, model, criterion, epoch, logger=None):
     losses = AverageMeter()
     top1 = AverageMeter()
     top5 = AverageMeter()
+    nclass = len(val_loader.dataset.classes)
+    class_correct = torch.zeros(nclass, dtype=torch.long)
+    class_total = torch.zeros(nclass, dtype=torch.long)
 
     # switch to evaluate mode
     model.eval()
@@ -309,6 +408,12 @@ def validate(args, val_loader, model, criterion, epoch, logger=None):
 
         # measure accuracy and record loss
         acc1, acc5 = accuracy(output.data, target, topk=(1, 5))
+        predictions = output.argmax(dim=1)
+        target_cpu = target.detach().cpu()
+        predictions_cpu = predictions.detach().cpu()
+        class_total += torch.bincount(target_cpu, minlength=nclass)
+        correct_targets = target_cpu[predictions_cpu.eq(target_cpu)]
+        class_correct += torch.bincount(correct_targets, minlength=nclass)
 
         losses.update(loss.item(), input.size(0))
 
@@ -323,7 +428,7 @@ def validate(args, val_loader, model, criterion, epoch, logger=None):
         logger(
             '(Test ) [Epoch {0}/{1}] {2} Top1 {top1.avg:.1f}  Top5 {top5.avg:.1f}  Loss {loss.avg:.3f}'
             .format(epoch, args.epochs, get_time(), top1=top1, top5=top5, loss=losses))
-    return top1.avg, top5.avg, losses.avg
+    return top1.avg, top5.avg, losses.avg, class_correct.tolist(), class_total.tolist()
 
 
 def load_checkpoint(path, model, optimizer):
