@@ -119,3 +119,32 @@ to the earlier seed-0 run directory to create a six-curve cross-seed plot.
 
 If generation completed but downstream training did not, resume only the three
 classifier runs with `RUN_ID=<completed run> bash scripts/train_guidance_run.sh`.
+
+## Conflict-aware projection ablation
+
+The optional `--conflict_projection_alpha` removes only the component of CoDA
+image guidance that opposes text guidance. `0` is exactly the original method,
+`0.5` removes half of that negative component, and `1.0` removes it completely.
+Gamma remains unchanged. Guidance CSV and plots store both the interaction
+before projection and the effective interaction used by the sampler.
+
+Run the focused-caption matrix at generation seeds 0 and 1 with alpha 0.5 and
+1.0 using:
+
+```bash
+PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python \
+bash scripts/conflict_projection_sweep.sh
+```
+
+Results are isolated under `results/.../projection_runs/<RUN_ID>/seed_<SEED>`
+and `trained_results/projection_runs/imageA/<RUN_ID>`. Existing baseline and
+unprojected focused-caption runs are reused for the final analysis and are not
+regenerated. Optionally set `SEED0_REFERENCE_RUN_DIR` and
+`SEED1_REFERENCE_RUN_DIR` to their existing guidance run directories; the
+comparison plots will then contain baseline, alpha 0, alpha 0.5, and alpha 1.0.
+To generate without classifier training, set
+`RUN_DOWNSTREAM_TRAINING=false`. Resume only downstream training with:
+
+```bash
+RUN_ID=<completed projection run> bash scripts/train_projection_run.sh
+```

@@ -42,6 +42,7 @@ def _timing_metadata(args):
         "denoising_factor": args.denoising_factor,
         "guide_t_percent": args.guideTPercent,
         "coda_guidance_scale": args.CoDA_guidance_scale,
+        "conflict_projection_alpha": args.conflict_projection_alpha,
     }
 
 
@@ -383,8 +384,15 @@ def get_args():
     parser.add_argument("--guideTPercent",       type=float, default=1.0, help="Above")
     parser.add_argument("--cfg_guidance_scale",  type=float, default=5.0, help="Standard cfg guidance scale")
     parser.add_argument("--CoDA_guidance_scale", type=float, default=0.1, help="CoDA guidance scale, AKA gamma")
+    parser.add_argument(
+        "--conflict_projection_alpha", type=float, default=0.0,
+        help="Fraction of the conflicting image-guidance component to remove (0 to 1)."
+    )
 
     args = parser.parse_args()
+
+    if not 0.0 <= args.conflict_projection_alpha <= 1.0:
+        parser.error("--conflict_projection_alpha must be between 0 and 1.")
 
     ############################################
     # postprocess the args

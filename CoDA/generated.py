@@ -157,6 +157,7 @@ def generate_images_single_gpu(gpu_id, args, clusters_centers, my_assignments, r
 
                                     "guidance_scale": args.cfg_guidance_scale,
                                     "CoDA_guidance_scale": args.CoDA_guidance_scale,
+                                    "conflict_projection_alpha": args.conflict_projection_alpha,
                                 }
                                 if args.CoDA_guidance_scale > 0.0:
                                     pipeline_kwargs["represent_latent"] = represent_latent
@@ -182,6 +183,7 @@ def generate_images_single_gpu(gpu_id, args, clusters_centers, my_assignments, r
                                     "guideTPercent": args.guideTPercent,
                                     "guidance_scale": args.cfg_guidance_scale,
                                     "CoDA_guidance_scale": args.CoDA_guidance_scale,
+                                    "conflict_projection_alpha": args.conflict_projection_alpha,
                                     "generator": generator
                                 }
                                 if args.CoDA_guidance_scale > 0.0:
@@ -297,6 +299,7 @@ def generate_images_multi_gpu(args, clusters_centers):
                 "sample_step": args.sample_step,
                 "cfg_guidance_scale": args.cfg_guidance_scale,
                 "coda_guidance_scale": args.CoDA_guidance_scale,
+                "conflict_projection_alpha": args.conflict_projection_alpha,
                 "guide_t_percent": args.guideTPercent,
                 "seed": args.seed,
                 "prompt_template": (

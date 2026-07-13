@@ -20,6 +20,11 @@ RAW_FIELDS = [
     "q_text_over_image",
     "cosine_similarity",
     "conflict_projection_ratio",
+    "pre_projection_cosine_similarity",
+    "pre_projection_conflict_ratio",
+    "pre_projection_image_norm_l2",
+    "pre_projection_q_text_over_image",
+    "conflict_projection_alpha",
 ]
 
 
@@ -71,6 +76,10 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
     text_norms = np.asarray([_float(record, "text_norm_l2") for record in records])
     image_norms = np.asarray([_float(record, "image_norm_l2") for record in records])
     conflict_ratios = np.asarray([_float(record, "conflict_projection_ratio") for record in records])
+    pre_cosine = np.asarray([_float(record, "pre_projection_cosine_similarity") for record in records])
+    pre_conflict_ratios = np.asarray([_float(record, "pre_projection_conflict_ratio") for record in records])
+    pre_image_norms = np.asarray([_float(record, "pre_projection_image_norm_l2") for record in records])
+    pre_q_values = np.asarray([_float(record, "pre_projection_q_text_over_image") for record in records])
     step_indices = sorted({int(record["step_index"]) for record in records})
 
     per_step = []
@@ -79,6 +88,9 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
         step_cosine = np.asarray([_float(record, "cosine_similarity") for record in step_records])
         step_q = np.asarray([_float(record, "q_text_over_image") for record in step_records])
         step_conflict = np.asarray([_float(record, "conflict_projection_ratio") for record in step_records])
+        step_pre_cosine = np.asarray([_float(record, "pre_projection_cosine_similarity") for record in step_records])
+        step_pre_conflict = np.asarray([_float(record, "pre_projection_conflict_ratio") for record in step_records])
+        step_pre_q = np.asarray([_float(record, "pre_projection_q_text_over_image") for record in step_records])
         per_step.append({
             "step_index": step_index,
             "timestep": int(step_records[0]["timestep"]),
@@ -94,6 +106,9 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
             "conflict_projection_ratio_median": float(np.median(step_conflict)),
             "conflict_projection_ratio_p25": float(np.percentile(step_conflict, 25)),
             "conflict_projection_ratio_p75": float(np.percentile(step_conflict, 75)),
+            "pre_projection_cosine_mean": float(np.mean(step_pre_cosine)),
+            "pre_projection_conflict_ratio_median": float(np.median(step_pre_conflict)),
+            "pre_projection_q_median": float(np.median(step_pre_q)),
         })
 
     norm_correlation = None
@@ -101,12 +116,13 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
         norm_correlation = float(np.corrcoef(text_norms, image_norms)[0, 1])
 
     summary = {
-        "format_version": 2,
+        "format_version": 3,
         "definition": {
             "g_text": "epsilon_conditional - epsilon_unconditional",
             "g_img": "CoDA delta_epsilon_text",
             "q_t": "L2(g_text) / L2(g_img)",
             "kappa_t": "max(0, -dot(g_text, g_img)) / L2(g_text)^2",
+            "pre_projection_metrics": "Interaction before conflict-aware projection",
             "space": "SDXL noise-prediction space before CFG scaling",
         },
         "metadata": metadata,
@@ -128,6 +144,13 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
             "conflict_projection_ratio_median": float(np.median(conflict_ratios)),
             "conflict_projection_ratio_p25": float(np.percentile(conflict_ratios, 25)),
             "conflict_projection_ratio_p75": float(np.percentile(conflict_ratios, 75)),
+            "pre_projection_cosine_mean": float(np.mean(pre_cosine)),
+            "pre_projection_cosine_negative_fraction": float(np.mean(pre_cosine < 0.0)),
+            "pre_projection_conflict_ratio_mean": float(np.mean(pre_conflict_ratios)),
+            "pre_projection_conflict_ratio_median": float(np.median(pre_conflict_ratios)),
+            "pre_projection_image_norm_mean": float(np.mean(pre_image_norms)),
+            "pre_projection_q_mean": float(np.mean(pre_q_values)),
+            "pre_projection_q_median": float(np.median(pre_q_values)),
         },
         "per_step": per_step,
     }
@@ -144,26 +167,41 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
     conflict_median = np.asarray([item["conflict_projection_ratio_median"] for item in per_step])
     conflict_p25 = np.asarray([item["conflict_projection_ratio_p25"] for item in per_step])
     conflict_p75 = np.asarray([item["conflict_projection_ratio_p75"] for item in per_step])
+    pre_cosine_mean = np.asarray([item["pre_projection_cosine_mean"] for item in per_step])
+    pre_conflict_median = np.asarray([item["pre_projection_conflict_ratio_median"] for item in per_step])
+    pre_q_median = np.asarray([item["pre_projection_q_median"] for item in per_step])
 
     fig, axes = plt.subplots(3, 1, figsize=(9, 11), sharex=True)
     axes[0].plot(x, cosine_mean, marker="o", label="mean cosine")
+    if metadata.get("conflict_projection_alpha", 0.0) > 0.0:
+        axes[0].plot(x, pre_cosine_mean, linestyle="--", alpha=0.75, label="before projection")
     axes[0].fill_between(x, cosine_mean - cosine_std, cosine_mean + cosine_std, alpha=0.2)
     axes[0].axhline(0.0, color="black", linewidth=1, linestyle="--")
     axes[0].set_ylabel("cos(g_text, g_img)")
     axes[0].set_title(metadata.get("method", "Guidance interaction"))
     axes[0].grid(alpha=0.25)
+    axes[0].legend()
 
     axes[1].plot(x, q_median, marker="o", color="tab:orange", label="median q")
+    if metadata.get("conflict_projection_alpha", 0.0) > 0.0:
+        axes[1].plot(x, pre_q_median, linestyle="--", color="tab:gray", alpha=0.8, label="before projection")
     axes[1].fill_between(x, q_p25, q_p75, color="tab:orange", alpha=0.2, label="IQR")
     axes[1].axhline(1.0, color="black", linewidth=1, linestyle="--")
     axes[1].set_yscale("log")
     axes[1].set_ylabel("q = ||g_text|| / ||g_img||")
     axes[1].grid(alpha=0.25)
+    axes[1].legend()
     axes[2].plot(x, conflict_median, marker="o", color="tab:red", label="median kappa")
+    if metadata.get("conflict_projection_alpha", 0.0) > 0.0:
+        axes[2].plot(
+            x, pre_conflict_median, linestyle="--", color="tab:gray",
+            alpha=0.8, label="before projection"
+        )
     axes[2].fill_between(x, conflict_p25, conflict_p75, color="tab:red", alpha=0.2, label="IQR")
     axes[2].set_xlabel("Denoising step index (early to late)")
     axes[2].set_ylabel("kappa: text cancellation ratio")
     axes[2].grid(alpha=0.25)
+    axes[2].legend()
     fig.tight_layout()
     fig.savefig(os.path.join(metrics_dir, "guidance_over_steps.png"), dpi=180)
     plt.close(fig)

@@ -91,6 +91,7 @@ class CoDA_SDXL(StableDiffusionXLPipeline):
             represent_latent: torch.Tensor = None,
             guideTPercent: float = 0.5,
             CoDA_guidance_scale: float = 0.1,
+            conflict_projection_alpha: float = 0.0,
             guidance_metrics_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
         """
@@ -269,18 +270,44 @@ class CoDA_SDXL(StableDiffusionXLPipeline):
                     # Convert the latent space correction term to the noise space.
                     ##################################################################################################
                     delta_epsilon_text = - (sqrt_alpha_prod_t / sqrt_one_minus_alpha_prod_t) * pix_guide_mark
+
+                    # Remove only the component of image guidance that opposes text guidance.
+                    # alpha=0 preserves CoDA exactly; alpha=1 makes a conflicting image
+                    # direction orthogonal to the text direction.
+                    text_direction = noise_pred_text_ori - noise_pred_uncond
+                    pre_projection_delta = delta_epsilon_text
+                    if conflict_projection_alpha > 0.0:
+                        reduce_dims = tuple(range(1, text_direction.ndim))
+                        dot_product = torch.sum(
+                            pre_projection_delta.float() * text_direction.float(), dim=reduce_dims
+                        )
+                        text_norm_sq = torch.sum(text_direction.float().square(), dim=reduce_dims).clamp_min(1e-12)
+                        conflicting_coefficient = (dot_product / text_norm_sq).clamp_max(0.0)
+                        broadcast_shape = (-1,) + (1,) * (text_direction.ndim - 1)
+                        delta_epsilon_text = pre_projection_delta - (
+                            conflict_projection_alpha
+                            * conflicting_coefficient.reshape(broadcast_shape).to(text_direction.dtype)
+                            * text_direction
+                        )
                     noise_pred_text = noise_pred_text_ori + delta_epsilon_text
 
                     if guidance_metrics_callback is not None:
-                        text_direction = noise_pred_text_ori - noise_pred_uncond
                         text_flat = text_direction.float().reshape(text_direction.shape[0], -1)
                         image_flat = delta_epsilon_text.float().reshape(delta_epsilon_text.shape[0], -1)
+                        pre_image_flat = pre_projection_delta.float().reshape(pre_projection_delta.shape[0], -1)
                         text_norm = torch.linalg.vector_norm(text_flat, dim=1)
                         image_norm = torch.linalg.vector_norm(image_flat, dim=1)
+                        pre_image_norm = torch.linalg.vector_norm(pre_image_flat, dim=1)
                         cosine = torch.nn.functional.cosine_similarity(text_flat, image_flat, dim=1)
                         q_value = text_norm / image_norm.clamp_min(1e-12)
+                        pre_q_value = text_norm / pre_image_norm.clamp_min(1e-12)
                         dot_product = torch.sum(text_flat * image_flat, dim=1)
                         conflict_projection_ratio = (-dot_product).clamp_min(0.0) / text_norm.square().clamp_min(1e-12)
+                        pre_cosine = torch.nn.functional.cosine_similarity(text_flat, pre_image_flat, dim=1)
+                        pre_dot_product = torch.sum(text_flat * pre_image_flat, dim=1)
+                        pre_conflict_projection_ratio = (
+                            (-pre_dot_product).clamp_min(0.0) / text_norm.square().clamp_min(1e-12)
+                        )
                         guidance_metrics_callback({
                             "step_index": i,
                             "timestep": int(t.item()),
@@ -290,6 +317,11 @@ class CoDA_SDXL(StableDiffusionXLPipeline):
                             "q_text_over_image": float(q_value[0].item()),
                             "cosine_similarity": float(cosine[0].item()),
                             "conflict_projection_ratio": float(conflict_projection_ratio[0].item()),
+                            "pre_projection_cosine_similarity": float(pre_cosine[0].item()),
+                            "pre_projection_conflict_ratio": float(pre_conflict_projection_ratio[0].item()),
+                            "pre_projection_image_norm_l2": float(pre_image_norm[0].item()),
+                            "pre_projection_q_text_over_image": float(pre_q_value[0].item()),
+                            "conflict_projection_alpha": float(conflict_projection_alpha),
                         })
 
                 else:
