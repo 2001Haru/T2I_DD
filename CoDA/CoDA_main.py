@@ -43,6 +43,7 @@ def _timing_metadata(args):
         "guide_t_percent": args.guideTPercent,
         "coda_guidance_scale": args.CoDA_guidance_scale,
         "conflict_projection_alpha": args.conflict_projection_alpha,
+        "conflict_projection_kappa_cap": args.conflict_projection_kappa_cap,
     }
 
 
@@ -365,7 +366,7 @@ def get_args():
     )
     parser.add_argument(
         "--cluster_caption_prompt_template", type=str,
-        default="An natural image of a {class_name}, {caption}, centered object.",
+        default="An natural photo of a {class_name}, {caption}, centered object.",
         help="SDXL prompt template used with --use_cluster_captions. Must contain {class_name} and {caption}."
     )
     parser.add_argument(
@@ -388,11 +389,21 @@ def get_args():
         "--conflict_projection_alpha", type=float, default=0.0,
         help="Fraction of the conflicting image-guidance component to remove (0 to 1)."
     )
+    parser.add_argument(
+        "--conflict_projection_kappa_cap", type=float, default=None,
+        help="Cap text cancellation kappa by removing only the excess conflicting image component."
+    )
 
     args = parser.parse_args()
 
     if not 0.0 <= args.conflict_projection_alpha <= 1.0:
         parser.error("--conflict_projection_alpha must be between 0 and 1.")
+    if args.conflict_projection_kappa_cap is not None and args.conflict_projection_kappa_cap < 0.0:
+        parser.error("--conflict_projection_kappa_cap must be non-negative.")
+    if args.conflict_projection_alpha > 0.0 and args.conflict_projection_kappa_cap is not None:
+        parser.error(
+            "--conflict_projection_alpha and --conflict_projection_kappa_cap are mutually exclusive."
+        )
 
     ############################################
     # postprocess the args

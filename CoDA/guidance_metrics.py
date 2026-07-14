@@ -25,6 +25,7 @@ RAW_FIELDS = [
     "pre_projection_image_norm_l2",
     "pre_projection_q_text_over_image",
     "conflict_projection_alpha",
+    "conflict_projection_kappa_cap",
 ]
 
 
@@ -91,6 +92,7 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
         step_pre_cosine = np.asarray([_float(record, "pre_projection_cosine_similarity") for record in step_records])
         step_pre_conflict = np.asarray([_float(record, "pre_projection_conflict_ratio") for record in step_records])
         step_pre_q = np.asarray([_float(record, "pre_projection_q_text_over_image") for record in step_records])
+        step_reduction = step_pre_conflict - step_conflict
         per_step.append({
             "step_index": step_index,
             "timestep": int(step_records[0]["timestep"]),
@@ -109,6 +111,8 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
             "pre_projection_cosine_mean": float(np.mean(step_pre_cosine)),
             "pre_projection_conflict_ratio_median": float(np.median(step_pre_conflict)),
             "pre_projection_q_median": float(np.median(step_pre_q)),
+            "kappa_reduction_mean": float(np.mean(step_reduction)),
+            "projection_intervention_fraction": float(np.mean(step_reduction > 1e-8)),
         })
 
     norm_correlation = None
@@ -116,13 +120,14 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
         norm_correlation = float(np.corrcoef(text_norms, image_norms)[0, 1])
 
     summary = {
-        "format_version": 3,
+        "format_version": 4,
         "definition": {
             "g_text": "epsilon_conditional - epsilon_unconditional",
             "g_img": "CoDA delta_epsilon_text",
             "q_t": "L2(g_text) / L2(g_img)",
             "kappa_t": "max(0, -dot(g_text, g_img)) / L2(g_text)^2",
             "pre_projection_metrics": "Interaction before conflict-aware projection",
+            "kappa_cap": "If configured, post-projection kappa is min(pre-projection kappa, cap)",
             "space": "SDXL noise-prediction space before CFG scaling",
         },
         "metadata": metadata,
@@ -151,6 +156,10 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
             "pre_projection_image_norm_mean": float(np.mean(pre_image_norms)),
             "pre_projection_q_mean": float(np.mean(pre_q_values)),
             "pre_projection_q_median": float(np.median(pre_q_values)),
+            "kappa_reduction_mean": float(np.mean(pre_conflict_ratios - conflict_ratios)),
+            "projection_intervention_fraction": float(
+                np.mean((pre_conflict_ratios - conflict_ratios) > 1e-8)
+            ),
         },
         "per_step": per_step,
     }
@@ -173,7 +182,11 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
 
     fig, axes = plt.subplots(3, 1, figsize=(9, 11), sharex=True)
     axes[0].plot(x, cosine_mean, marker="o", label="mean cosine")
-    if metadata.get("conflict_projection_alpha", 0.0) > 0.0:
+    projection_active = (
+        metadata.get("conflict_projection_alpha", 0.0) > 0.0
+        or metadata.get("conflict_projection_kappa_cap") is not None
+    )
+    if projection_active:
         axes[0].plot(x, pre_cosine_mean, linestyle="--", alpha=0.75, label="before projection")
     axes[0].fill_between(x, cosine_mean - cosine_std, cosine_mean + cosine_std, alpha=0.2)
     axes[0].axhline(0.0, color="black", linewidth=1, linestyle="--")
@@ -183,7 +196,7 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
     axes[0].legend()
 
     axes[1].plot(x, q_median, marker="o", color="tab:orange", label="median q")
-    if metadata.get("conflict_projection_alpha", 0.0) > 0.0:
+    if projection_active:
         axes[1].plot(x, pre_q_median, linestyle="--", color="tab:gray", alpha=0.8, label="before projection")
     axes[1].fill_between(x, q_p25, q_p75, color="tab:orange", alpha=0.2, label="IQR")
     axes[1].axhline(1.0, color="black", linewidth=1, linestyle="--")
@@ -192,7 +205,7 @@ def finalize_guidance_metrics(output_dir, num_gpus, metadata):
     axes[1].grid(alpha=0.25)
     axes[1].legend()
     axes[2].plot(x, conflict_median, marker="o", color="tab:red", label="median kappa")
-    if metadata.get("conflict_projection_alpha", 0.0) > 0.0:
+    if projection_active:
         axes[2].plot(
             x, pre_conflict_median, linestyle="--", color="tab:gray",
             alpha=0.8, label="before projection"

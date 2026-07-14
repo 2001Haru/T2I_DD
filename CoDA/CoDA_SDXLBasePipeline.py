@@ -92,6 +92,7 @@ class CoDA_SDXL(StableDiffusionXLPipeline):
             guideTPercent: float = 0.5,
             CoDA_guidance_scale: float = 0.1,
             conflict_projection_alpha: float = 0.0,
+            conflict_projection_kappa_cap: Optional[float] = None,
             guidance_metrics_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
         """
@@ -276,19 +277,27 @@ class CoDA_SDXL(StableDiffusionXLPipeline):
                     # direction orthogonal to the text direction.
                     text_direction = noise_pred_text_ori - noise_pred_uncond
                     pre_projection_delta = delta_epsilon_text
-                    if conflict_projection_alpha > 0.0:
+                    if conflict_projection_alpha > 0.0 or conflict_projection_kappa_cap is not None:
                         reduce_dims = tuple(range(1, text_direction.ndim))
                         dot_product = torch.sum(
                             pre_projection_delta.float() * text_direction.float(), dim=reduce_dims
                         )
                         text_norm_sq = torch.sum(text_direction.float().square(), dim=reduce_dims).clamp_min(1e-12)
-                        conflicting_coefficient = (dot_product / text_norm_sq).clamp_max(0.0)
                         broadcast_shape = (-1,) + (1,) * (text_direction.ndim - 1)
-                        delta_epsilon_text = pre_projection_delta - (
-                            conflict_projection_alpha
-                            * conflicting_coefficient.reshape(broadcast_shape).to(text_direction.dtype)
-                            * text_direction
-                        )
+                        if conflict_projection_kappa_cap is not None:
+                            raw_kappa = (-dot_product).clamp_min(0.0) / text_norm_sq
+                            excess_kappa = (raw_kappa - conflict_projection_kappa_cap).clamp_min(0.0)
+                            delta_epsilon_text = pre_projection_delta + (
+                                excess_kappa.reshape(broadcast_shape).to(text_direction.dtype)
+                                * text_direction
+                            )
+                        else:
+                            conflicting_coefficient = (dot_product / text_norm_sq).clamp_max(0.0)
+                            delta_epsilon_text = pre_projection_delta - (
+                                conflict_projection_alpha
+                                * conflicting_coefficient.reshape(broadcast_shape).to(text_direction.dtype)
+                                * text_direction
+                            )
                     noise_pred_text = noise_pred_text_ori + delta_epsilon_text
 
                     if guidance_metrics_callback is not None:
@@ -322,6 +331,7 @@ class CoDA_SDXL(StableDiffusionXLPipeline):
                             "pre_projection_image_norm_l2": float(pre_image_norm[0].item()),
                             "pre_projection_q_text_over_image": float(pre_q_value[0].item()),
                             "conflict_projection_alpha": float(conflict_projection_alpha),
+                            "conflict_projection_kappa_cap": conflict_projection_kappa_cap,
                         })
 
                 else:

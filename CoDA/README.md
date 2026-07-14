@@ -180,3 +180,35 @@ Resume only downstream training with:
 ```bash
 RUN_ID=<completed ImageB run> bash scripts/train_imageB_run.sh
 ```
+
+## Class-level conflict diagnosis and kappa cap
+
+For a completed fixed ImageB run, relate each class's pre-projection guidance
+conflict to its downstream accuracy with:
+
+```bash
+RUN_ID=<completed ImageB run> bash scripts/analyze_imageB_guidance.sh
+```
+
+The resulting `class_guidance_diagnostics/` directory contains raw class-level
+CSV statistics, Pearson/Spearman correlations, four annotated accuracy/conflict
+scatter plots, and ten-class cosine/kappa curves. Denoising steps are divided
+into normalized early, middle, and late thirds.
+
+The alternative `--conflict_projection_kappa_cap` leaves image guidance intact
+when its cancellation ratio is below the cap and removes only the excess. It is
+mutually exclusive with fixed-alpha projection. After reviewing the diagnostic
+results, run the preregistered cap of 0.3 on the existing ImageA or ImageB
+clusters and captions with:
+
+```bash
+SPEC=imageA bash scripts/kappa_cap_experiment.sh
+SPEC=imageB bash scripts/kappa_cap_experiment.sh
+```
+
+Both generation seeds 0 and 1 are used by default. Resume training without
+regeneration using:
+
+```bash
+SPEC=imageB RUN_ID=<completed cap run> bash scripts/train_kappa_cap_run.sh
+```
