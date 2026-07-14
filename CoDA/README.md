@@ -221,6 +221,13 @@ them as a `2x2` montage and asks LLaVA for physical attributes shared across
 multiple tiles. The montage is used only by LLaVA; SDXL still receives CoDA's
 original representative as image guidance. Each caption manifest records the
 four source paths and squared VAE distances for inspection and provenance.
+LLaVA is instructed to return a single description of at most 35 words without
+referring to the montage. The manifest preserves its response in `raw_captions`
+and stores a layout-reference-free, length-normalized version in `captions`.
+Before sampling, the complete SDXL prompt is also checked against both CLIP
+tokenizers and the caption is shortened further if either 77-token limit would
+be exceeded. Each generated dataset writes `prompt_records_gpu*.json` with the
+effective prompt and both token counts for direct verification.
 
 The controlled experiment compares original CoDA, the existing single-image
 focused caption, and the four-image common-mode caption. Projection is disabled
@@ -256,3 +263,5 @@ GENERATE_CAPTIONS=false bash scripts/multiview_caption_experiment.sh
 ```
 
 Resume mode still refuses to overwrite any existing generated dataset.
+To replace captions from a paused pre-generation run after changing the prompt
+policy, add `OVERWRITE_CAPTIONS=true` when resuming.

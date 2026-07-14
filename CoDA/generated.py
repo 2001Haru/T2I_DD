@@ -13,7 +13,66 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 
 
-def _build_generation_prompt(args, class_id, class_name, shift):
+def _tokenizer_limit(tokenizer):
+    model_max_length = getattr(tokenizer, "model_max_length", 77)
+    return min(int(model_max_length), 77)
+
+
+def _prompt_fits_tokenizers(prompt, pipeline):
+    tokenizers = [
+        tokenizer for tokenizer in (getattr(pipeline, "tokenizer", None), getattr(pipeline, "tokenizer_2", None))
+        if tokenizer is not None
+    ]
+    return all(
+        len(tokenizer(prompt, add_special_tokens=True, truncation=False)["input_ids"])
+        <= _tokenizer_limit(tokenizer)
+        for tokenizer in tokenizers
+    )
+
+
+def _prompt_token_counts(prompt, pipeline):
+    counts = {}
+    for name, tokenizer in (
+        ("clip_tokenizer_1", getattr(pipeline, "tokenizer", None)),
+        ("clip_tokenizer_2", getattr(pipeline, "tokenizer_2", None)),
+    ):
+        if tokenizer is not None:
+            counts[name] = {
+                "tokens": len(tokenizer(prompt, add_special_tokens=True, truncation=False)["input_ids"]),
+                "limit": _tokenizer_limit(tokenizer),
+            }
+    return counts
+
+
+def _fit_caption_to_clip(args, pipeline, class_name, caption):
+    caption = caption.rstrip(" .,!?:;")
+
+    def render(candidate):
+        return args.cluster_caption_prompt_template.format(
+            class_name=class_name,
+            caption=candidate,
+        ).strip()
+
+    prompt = render(caption)
+    if _prompt_fits_tokenizers(prompt, pipeline):
+        return prompt
+
+    words = caption.split()
+    low, high = 0, len(words)
+    while low < high:
+        middle = (low + high + 1) // 2
+        candidate = " ".join(words[:middle]).rstrip(" ,;:")
+        if _prompt_fits_tokenizers(render(candidate), pipeline):
+            low = middle
+        else:
+            high = middle - 1
+    if low == 0:
+        raise ValueError(f"SDXL prompt template exceeds CLIP token limits for class {class_name!r}.")
+    fitted_caption = " ".join(words[:low]).rstrip(" .,!?:;")
+    return render(fitted_caption)
+
+
+def _build_generation_prompt(args, class_id, class_name, shift, pipeline=None):
     if not args.use_cluster_captions:
         return class_name
 
@@ -24,9 +83,10 @@ def _build_generation_prompt(args, class_id, class_name, shift):
             f"Missing cluster caption for representative image {class_id}/{shift}."
         ) from error
 
+    if pipeline is not None:
+        return _fit_caption_to_clip(args, pipeline, class_name, caption)
     return args.cluster_caption_prompt_template.format(
-        class_name=class_name,
-        caption=caption,
+        class_name=class_name, caption=caption.rstrip(" .,!?:;")
     ).strip()
 
 
@@ -93,6 +153,7 @@ def generate_images_single_gpu(gpu_id, args, clusters_centers, my_assignments, r
         class_id_to_name = args._class_id_to_name
         save_dir = os.path.join(args.save_dir, args.generated_images_dirname)
         guidance_records = []
+        prompt_records = []
 
         base_seed = args.seed + gpu_id * 10000
 
@@ -127,7 +188,17 @@ def generate_images_single_gpu(gpu_id, args, clusters_centers, my_assignments, r
                             # caption path adds only the matching cluster image semantics.
                             ################################################################
                             negative_prompt = None
-                            prompt = _build_generation_prompt(args, sel_class, first_class_name, shift)
+                            prompt = _build_generation_prompt(
+                                args, sel_class, first_class_name, shift, pipeline=pipeline
+                            )
+                            prompt_records.append({
+                                "class_id": sel_class,
+                                "class_name": first_class_name,
+                                "sample_index": shift,
+                                "image_seed": image_seed,
+                                "prompt": prompt,
+                                "token_counts": _prompt_token_counts(prompt, pipeline),
+                            })
 
                             def record_guidance_metrics(step_metrics):
                                 guidance_records.append({
@@ -215,6 +286,12 @@ def generate_images_single_gpu(gpu_id, args, clusters_centers, my_assignments, r
 
                     progress_bar.update(1)
         progress_bar.close()
+        prompt_record_path = os.path.join(save_dir, f"prompt_records_gpu{gpu_id}.json")
+        prompt_record_tmp = f"{prompt_record_path}.tmp"
+        with open(prompt_record_tmp, "w", encoding="utf-8") as file:
+            json.dump(prompt_records, file, ensure_ascii=False, indent=2)
+            file.write("\n")
+        os.replace(prompt_record_tmp, prompt_record_path)
         if args.measure_guidance_conflict:
             write_worker_metrics(save_dir, gpu_id, guidance_records)
         print(f"GPU {gpu_id} completed all tasks")

@@ -21,13 +21,14 @@ EVAL_SEED="${EVAL_SEED:-0}"
 CALCULATE_FEATURES="${CALCULATE_FEATURES:-false}"
 CALCULATE_CLUSTER="${CALCULATE_CLUSTER:-false}"
 GENERATE_CAPTIONS="${GENERATE_CAPTIONS:-true}"
+OVERWRITE_CAPTIONS="${OVERWRITE_CAPTIONS:-false}"
 RUN_GENERATION="${RUN_GENERATION:-true}"
 RUN_DOWNSTREAM_TRAINING="${RUN_DOWNSTREAM_TRAINING:-true}"
 RESUME_RUN="${RESUME_RUN:-false}"
 RUN_ID="${MULTIVIEW_RUN_ID:-${SPEC}_multiview_$(date -u +%Y%m%dT%H%M%SZ)}"
 
-SINGLE_INSTRUCTION='Describe the physical appearance of the {class_name} in the image. Include details about its shape, posture, color, and any distinct features.'
-MONTAGE_INSTRUCTION='The four tiles show images near one visual mode of the class {class_name}. Describe only physical appearance patterns of the {class_name} that recur across multiple tiles. Include shared shape, parts, posture, colors, textures, and distinctive features. Ignore backgrounds, people, other objects, the tile layout, and details present in only one tile.'
+SINGLE_INSTRUCTION='Write one concise sentence of at most 35 words describing only the physical appearance of the {class_name}, including visible shape, parts, posture, colors, textures, and distinctive features. Output only attributes usable in a single-image generation prompt. Do not mention the image, background, people, or other objects.'
+MONTAGE_INSTRUCTION='Identify recurring physical attributes of the {class_name} across the provided visual examples. Write one concise sentence of at most 35 words for a single-image generation prompt. Mention only shared shape, parts, posture, colors, textures, and distinctive features. Do not mention images, examples, panels, tiles, titles, layout, backgrounds, people, other objects, or one-off details.'
 SDXL_PROMPT_TEMPLATE='An natural photo of a {class_name}, {caption}, centered object.'
 
 EXPERIMENT_DIR="./results/${SPEC}/Step-${SAMPLE_STEP}/IPC-${IPC}/DF-${DF}-GTP-${GTP}-gamma-${GAMMA}/n_${N_NEIGHBORS}_s_${MIN_CLUSTER_SIZE}"
@@ -76,6 +77,10 @@ if (( ${#PREPARATION_ARGS[@]} > 0 )); then
 fi
 
 if [[ "$GENERATE_CAPTIONS" == "true" ]]; then
+    CAPTION_OVERWRITE_ARGS=()
+    if [[ "$OVERWRITE_CAPTIONS" == "true" ]]; then
+        CAPTION_OVERWRITE_ARGS+=(--overwrite_cluster_captions)
+    fi
     echo "==> Captioning single representatives"
     python CoDA_main.py \
         --spec "$SPEC" --IPC "$IPC" \
@@ -86,9 +91,11 @@ if [[ "$GENERATE_CAPTIONS" == "true" ]]; then
         --cluster_caption_model_path "$VLM_MODEL" \
         --cluster_caption_file "$SINGLE_CAPTION_FILE" \
         --cluster_caption_image_mode representative \
+        --cluster_caption_max_words 35 \
         --cluster_caption_instruction "$SINGLE_INSTRUCTION" \
         --experiment_method "single_caption_generation" \
-        --timing_file "${RUN_DIR}/timings/single_caption_generation.json"
+        --timing_file "${RUN_DIR}/timings/single_caption_generation.json" \
+        "${CAPTION_OVERWRITE_ARGS[@]}"
 
     echo "==> Captioning four-neighbor common modes"
     python CoDA_main.py \
@@ -101,10 +108,12 @@ if [[ "$GENERATE_CAPTIONS" == "true" ]]; then
         --cluster_caption_file "$MONTAGE_CAPTION_FILE" \
         --cluster_caption_image_mode montage_neighbors \
         --cluster_caption_neighbor_count 4 \
+        --cluster_caption_max_words 35 \
         --cluster_caption_montage_dir "${RUN_DIR}/caption_montages" \
         --cluster_caption_instruction "$MONTAGE_INSTRUCTION" \
         --experiment_method "montage_caption_generation" \
-        --timing_file "${RUN_DIR}/timings/montage_caption_generation.json"
+        --timing_file "${RUN_DIR}/timings/montage_caption_generation.json" \
+        "${CAPTION_OVERWRITE_ARGS[@]}"
 fi
 
 for caption_file in "$SINGLE_CAPTION_FILE" "$MONTAGE_CAPTION_FILE"; do

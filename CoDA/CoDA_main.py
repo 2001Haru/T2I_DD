@@ -357,6 +357,10 @@ def get_args():
         help="Maximum number of newly generated LLaVA caption tokens."
     )
     parser.add_argument(
+        "--cluster_caption_max_words", type=int, default=35,
+        help="Maximum words retained in a normalized caption before constructing the SDXL prompt."
+    )
+    parser.add_argument(
         "--cluster_caption_image_mode", choices=("representative", "montage_neighbors"),
         default="representative",
         help="Caption one representative or a 2x2 montage of its nearest VAE neighbors."
@@ -468,6 +472,8 @@ def get_args():
         parser.error("montage_neighbors currently requires --cluster_caption_neighbor_count 4.")
     if args.cluster_caption_montage_tile_size < 1:
         parser.error("--cluster_caption_montage_tile_size must be positive.")
+    if args.cluster_caption_max_words < 1:
+        parser.error("--cluster_caption_max_words must be positive.")
 
     os.makedirs(args.specific_cluster_dir, exist_ok=True)
     os.makedirs(args.plot_dir, exist_ok=True)

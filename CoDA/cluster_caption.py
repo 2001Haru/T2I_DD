@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 
 import torch
@@ -13,10 +14,11 @@ from tqdm import tqdm
 def _caption_file_payload(args):
     return {
         "metadata": {
-            "format_version": 2,
+            "format_version": 3,
             "model": args.cluster_caption_model_path,
             "instruction_template": args.cluster_caption_instruction,
             "max_new_tokens": args.cluster_caption_max_new_tokens,
+            "max_words": args.cluster_caption_max_words,
             "image_mode": args.cluster_caption_image_mode,
             "neighbor_count": args.cluster_caption_neighbor_count,
             "montage_tile_size": args.cluster_caption_montage_tile_size,
@@ -24,6 +26,7 @@ def _caption_file_payload(args):
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
         },
         "captions": {},
+        "raw_captions": {},
         "caption_inputs": {},
     }
 
@@ -132,6 +135,83 @@ def _generate_caption(model, processor, dtype, device, image_path, instruction, 
     return " ".join(caption.split())
 
 
+_LAYOUT_PHRASES = (
+    r"\b(?:in|across|among|from|throughout)\s+(?:all\s+)?(?:the\s+)?"
+    r"(?:four|4|multiple|several)\s+(?:image\s+)?(?:tiles?|titles?|panels?|images?)\b",
+    r"\b(?:in|across|among|from|throughout)\s+(?:these|the)\s+"
+    r"(?:tiles?|titles?|panels?|images?|examples?)\b",
+    r"\b(?:the\s+)?(?:four|4)\s+(?:tiles?|titles?|panels?|images?)\b",
+    r"\b(?:each|every)\s+(?:tile|title|panel|image|example)\b",
+)
+_TRAILING_FILLER = re.compile(
+    r"(?:\s+|,)+(?:and|or|with|including|featuring|such as|as well as)\s*$",
+    flags=re.IGNORECASE,
+)
+
+
+def _remove_layout_references(text):
+    text = re.sub(
+        r"(^|[.!?]\s+)(?:the\s+)?(?:(?:four|4|these|provided|multiple)\s+)?"
+        r"(?:images?|examples?|tiles?|titles?|panels?)\s+(?:show|depict|display|feature)\s+",
+        r"\1", text, flags=re.IGNORECASE,
+    )
+    for pattern in _LAYOUT_PHRASES:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+([,.;:])", r"\1", text)
+    return " ".join(text.split()).lstrip(" ,;:-")
+
+
+def _is_meta_sentence(sentence):
+    lowered = sentence.lower()
+    return any(phrase in lowered for phrase in (
+        "share a similar physical appearance",
+        "shares a similar physical appearance",
+        "shared physical appearance pattern",
+        "common physical appearance pattern",
+    ))
+
+
+def _trim_words(text, max_words):
+    words = text.split()
+    if len(words) <= max_words:
+        return text.strip()
+
+    sentence_matches = list(re.finditer(r"[^.!?]+[.!?]", text))
+    completed = []
+    completed_words = 0
+    for match in sentence_matches:
+        sentence = match.group(0).strip()
+        count = len(sentence.split())
+        if completed_words + count > max_words:
+            break
+        completed.append(sentence)
+        completed_words += count
+    if completed:
+        return " ".join(completed)
+
+    trimmed = " ".join(words[:max_words]).rstrip(" ,;:")
+    return _TRAILING_FILLER.sub("", trimmed).rstrip(" ,;:") + "."
+
+
+def normalize_caption(caption, image_mode, max_words):
+    """Convert VLM prose into a concise phrase safe for a single-image prompt."""
+    normalized = " ".join(caption.split()).strip()
+    if image_mode == "montage_neighbors":
+        normalized = _remove_layout_references(normalized)
+        sentences = [part.strip() for part in re.findall(r"[^.!?]+[.!?]?", normalized)]
+        useful = [sentence for sentence in sentences if sentence and not _is_meta_sentence(sentence)]
+        normalized = " ".join(useful)
+
+    # Drop a final fragment caused by max_new_tokens when complete content precedes it.
+    if normalized and normalized[-1] not in ".!?" and re.search(r"[.!?]", normalized):
+        normalized = normalized[:max(match.end() for match in re.finditer(r"[.!?]", normalized))]
+    normalized = _trim_words(normalized, max_words)
+    normalized = _TRAILING_FILLER.sub("", normalized).strip(" ,;:")
+    if not normalized:
+        raise ValueError(f"Caption became empty after normalization: {caption!r}")
+    return normalized
+
+
 def _validate_caption_config(path, args):
     with open(path, "r", encoding="utf-8") as file:
         payload = json.load(file)
@@ -140,6 +220,7 @@ def _validate_caption_config(path, args):
         "model": args.cluster_caption_model_path,
         "instruction_template": args.cluster_caption_instruction,
         "max_new_tokens": args.cluster_caption_max_new_tokens,
+        "max_words": args.cluster_caption_max_words,
         "image_mode": args.cluster_caption_image_mode,
         "neighbor_count": args.cluster_caption_neighbor_count,
         "montage_tile_size": args.cluster_caption_montage_tile_size,
@@ -304,7 +385,7 @@ def generate_cluster_captions(args, sel_classes, class_id_to_name):
 
     for class_id, class_name, shift, image_path in tqdm(tasks, desc="Captioning cluster representatives"):
         instruction = args.cluster_caption_instruction.format(class_name=class_name)
-        caption = _generate_caption(
+        raw_caption = _generate_caption(
             model=model,
             processor=processor,
             dtype=dtype,
@@ -313,6 +394,12 @@ def generate_cluster_captions(args, sel_classes, class_id_to_name):
             instruction=instruction,
             max_new_tokens=args.cluster_caption_max_new_tokens,
         )
+        caption = normalize_caption(
+            raw_caption,
+            image_mode=args.cluster_caption_image_mode,
+            max_words=args.cluster_caption_max_words,
+        )
+        payload["raw_captions"].setdefault(class_id, {})[str(shift)] = raw_caption
         payload["captions"].setdefault(class_id, {})[str(shift)] = caption
 
     _write_json(caption_path, payload)
