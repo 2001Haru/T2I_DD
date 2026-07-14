@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timezone
 
 import torch
+import numpy as np
 from PIL import Image
 from tqdm import tqdm
 
@@ -12,13 +13,18 @@ from tqdm import tqdm
 def _caption_file_payload(args):
     return {
         "metadata": {
-            "format_version": 1,
+            "format_version": 2,
             "model": args.cluster_caption_model_path,
             "instruction_template": args.cluster_caption_instruction,
             "max_new_tokens": args.cluster_caption_max_new_tokens,
+            "image_mode": args.cluster_caption_image_mode,
+            "neighbor_count": args.cluster_caption_neighbor_count,
+            "montage_tile_size": args.cluster_caption_montage_tile_size,
+            "neighbor_selection_space": "sdxl_vae_latent_mean_before_standardization",
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
         },
         "captions": {},
+        "caption_inputs": {},
     }
 
 
@@ -134,6 +140,9 @@ def _validate_caption_config(path, args):
         "model": args.cluster_caption_model_path,
         "instruction_template": args.cluster_caption_instruction,
         "max_new_tokens": args.cluster_caption_max_new_tokens,
+        "image_mode": args.cluster_caption_image_mode,
+        "neighbor_count": args.cluster_caption_neighbor_count,
+        "montage_tile_size": args.cluster_caption_montage_tile_size,
     }
     mismatches = [
         key for key, value in expected.items() if metadata.get(key) != value
@@ -143,6 +152,127 @@ def _validate_caption_config(path, args):
             f"Caption configuration changed for {path}: {', '.join(mismatches)}. "
             "Use a new --cluster_caption_file or pass --overwrite_cluster_captions."
         )
+
+
+def _load_pickle(path):
+    import pickle
+
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Required clustering artifact was not found: {path}")
+    with open(path, "rb") as file:
+        return pickle.load(file)
+
+
+def _to_flat_numpy(items):
+    if isinstance(items, np.ndarray) and items.ndim == 2:
+        return items.astype(np.float32, copy=False)
+    return np.stack([np.asarray(item, dtype=np.float32).reshape(-1) for item in items])
+
+
+def _nearest_image_paths(features, paths, center, count):
+    if count < 1:
+        raise ValueError("Neighbor count must be positive.")
+    features = _to_flat_numpy(features)
+    center = np.asarray(center, dtype=np.float32).reshape(-1)
+    if features.shape[1] != center.shape[0]:
+        raise ValueError(
+            f"Feature dimension mismatch: samples have {features.shape[1]}, center has {center.shape[0]}."
+        )
+    if len(paths) != len(features):
+        raise ValueError(f"Feature/path count mismatch: {len(features)} features and {len(paths)} paths.")
+    if count > len(paths):
+        raise ValueError(f"Requested {count} caption neighbors, but the class has only {len(paths)} images.")
+
+    differences = features - center
+    squared_distances = np.einsum("ij,ij->i", differences, differences)
+    candidates = np.argpartition(squared_distances, count - 1)[:count]
+    nearest = candidates[np.lexsort((candidates, squared_distances[candidates]))]
+    return [paths[index] for index in nearest], [float(squared_distances[index]) for index in nearest]
+
+
+def _save_montage(image_paths, output_path, tile_size):
+    columns = 2
+    rows = (len(image_paths) + columns - 1) // columns
+    canvas = Image.new("RGB", (columns * tile_size, rows * tile_size), color="white")
+    for index, image_path in enumerate(image_paths):
+        with Image.open(image_path) as image:
+            tile = image.convert("RGB").resize((tile_size, tile_size), Image.Resampling.LANCZOS)
+        canvas.paste(tile, ((index % columns) * tile_size, (index // columns) * tile_size))
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    canvas.save(output_path)
+
+
+def _build_montage_tasks(args, sel_classes, class_id_to_name):
+    tasks = []
+    caption_inputs = {}
+    chunk_cache = {}
+    center_cache = {}
+
+    for local_label, class_id in enumerate(sel_classes):
+        chunk_id = local_label // 10
+        if chunk_id not in chunk_cache:
+            feature_path = f"{args.features_cache_path}_{chunk_id}"
+            chunk_cache[chunk_id] = _load_pickle(feature_path)
+
+            base, extension = os.path.splitext(args.saved_clusters_base_name)
+            center_path = os.path.join(args.specific_cluster_dir, f"{base}_{chunk_id}{extension}")
+            center_cache[chunk_id] = _load_pickle(center_path)
+
+        class_features = chunk_cache[chunk_id]["features"].get(local_label)
+        class_paths = chunk_cache[chunk_id]["paths"].get(local_label)
+        class_centers = center_cache[chunk_id].get(local_label)
+        if class_features is None or class_paths is None or class_centers is None:
+            raise KeyError(f"Missing cached clustering data for local class {local_label} ({class_id}).")
+        if len(class_centers) != args.IPC:
+            raise ValueError(
+                f"Expected {args.IPC} centers for {class_id}, found {len(class_centers)}."
+            )
+        class_features = _to_flat_numpy(class_features)
+
+        class_name = class_id_to_name[class_id].split(',')[0].strip()
+        for shift, center in enumerate(class_centers):
+            source_paths, squared_distances = _nearest_image_paths(
+                class_features, class_paths, center, args.cluster_caption_neighbor_count
+            )
+            missing = [path for path in source_paths if not os.path.isfile(path)]
+            if missing:
+                raise FileNotFoundError(f"Caption montage source image was not found: {missing[0]}")
+
+            montage_path = os.path.join(args.cluster_caption_montage_dir, class_id, f"{shift}.png")
+            _save_montage(source_paths, montage_path, args.cluster_caption_montage_tile_size)
+            tasks.append((class_id, class_name, shift, montage_path))
+            caption_inputs.setdefault(class_id, {})[str(shift)] = {
+                "image_path": montage_path,
+                "source_paths": source_paths,
+                "squared_vae_distances": squared_distances,
+            }
+
+    return tasks, caption_inputs
+
+
+def _build_caption_tasks(args, sel_classes, class_id_to_name):
+    if args.cluster_caption_image_mode == "montage_neighbors":
+        return _build_montage_tasks(args, sel_classes, class_id_to_name)
+
+    tasks = [
+        (
+            class_id,
+            class_id_to_name[class_id].split(',')[0].strip(),
+            shift,
+            os.path.join(args.save_dir, "real_images", class_id, f"{shift}.png"),
+        )
+        for class_id in sel_classes
+        for shift in range(args.IPC)
+    ]
+    caption_inputs = {
+        class_id: {
+            str(shift): {"image_path": image_path, "source_paths": [image_path]}
+            for task_class_id, _, shift, image_path in tasks
+            if task_class_id == class_id
+        }
+        for class_id in sel_classes
+    }
+    return tasks, caption_inputs
 
 
 def generate_cluster_captions(args, sel_classes, class_id_to_name):
@@ -157,21 +287,8 @@ def generate_cluster_captions(args, sel_classes, class_id_to_name):
         print(f"Using existing complete cluster captions: {caption_path}")
         return captions
 
-    device = args.cluster_caption_device
-    print(f"Loading LLaVA caption model from: {args.cluster_caption_model_path}")
-    processor, model, dtype = _load_llava(args.cluster_caption_model_path, device)
     payload = _caption_file_payload(args)
-
-    tasks = [
-        (
-            class_id,
-            class_id_to_name[class_id].split(',')[0].strip(),
-            shift,
-            os.path.join(args.save_dir, "real_images", class_id, f"{shift}.png"),
-        )
-        for class_id in sel_classes
-        for shift in range(args.IPC)
-    ]
+    tasks, payload["caption_inputs"] = _build_caption_tasks(args, sel_classes, class_id_to_name)
     missing_images = [path for _, _, _, path in tasks if not os.path.isfile(path)]
     if missing_images:
         preview = ", ".join(missing_images[:5])
@@ -180,6 +297,10 @@ def generate_cluster_captions(args, sel_classes, class_id_to_name):
             f"Representative images are incomplete; missing {len(missing_images)} files: {preview}{suffix}. "
             "Run --calcu_cluster with the same experiment settings first."
         )
+
+    device = args.cluster_caption_device
+    print(f"Loading LLaVA caption model from: {args.cluster_caption_model_path}")
+    processor, model, dtype = _load_llava(args.cluster_caption_model_path, device)
 
     for class_id, class_name, shift, image_path in tqdm(tasks, desc="Captioning cluster representatives"):
         instruction = args.cluster_caption_instruction.format(class_name=class_name)

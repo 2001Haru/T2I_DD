@@ -212,3 +212,47 @@ regeneration using:
 ```bash
 SPEC=imageB RUN_ID=<completed cap run> bash scripts/train_kappa_cap_run.sh
 ```
+
+## Multi-image local-mode caption experiment
+
+The `montage_neighbors` caption mode retrieves the four nearest training images
+to each saved cluster center in the original SDXL VAE feature space. It stores
+them as a `2x2` montage and asks LLaVA for physical attributes shared across
+multiple tiles. The montage is used only by LLaVA; SDXL still receives CoDA's
+original representative as image guidance. Each caption manifest records the
+four source paths and squared VAE distances for inspection and provenance.
+
+The controlled experiment compares original CoDA, the existing single-image
+focused caption, and the four-image common-mode caption. Projection is disabled
+for all three methods, and generation seeds 0 and 1 are used by default:
+
+```bash
+SPEC=imageA bash scripts/multiview_caption_experiment.sh
+SPEC=imageB bash scripts/multiview_caption_experiment.sh
+```
+
+Existing feature and cluster artifacts are reused by default. Set
+`CALCULATE_FEATURES=true CALCULATE_CLUSTER=true` only for a new class subset.
+Before SDXL generation, inspect `caption_montages/` and
+`captions_montage_common_mode.json` inside the timestamped run directory.
+Outputs are isolated under `results/.../multiview_caption_runs/<RUN_ID>` and
+`trained_results/multiview_caption_runs/<SPEC>/<RUN_ID>`. To generate without
+training, set `RUN_DOWNSTREAM_TRAINING=false`; resume only training with:
+
+```bash
+SPEC=imageA RUN_ID=<completed multiview run> \
+bash scripts/train_multiview_caption_run.sh
+```
+
+To pause for caption inspection before spending time on SDXL, use a fixed ID:
+
+```bash
+MULTIVIEW_RUN_ID=imageA_multiview_v0 SPEC=imageA \
+RUN_GENERATION=false RUN_DOWNSTREAM_TRAINING=false \
+bash scripts/multiview_caption_experiment.sh
+
+MULTIVIEW_RUN_ID=imageA_multiview_v0 SPEC=imageA RESUME_RUN=true \
+GENERATE_CAPTIONS=false bash scripts/multiview_caption_experiment.sh
+```
+
+Resume mode still refuses to overwrite any existing generated dataset.

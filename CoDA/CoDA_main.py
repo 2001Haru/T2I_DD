@@ -357,6 +357,23 @@ def get_args():
         help="Maximum number of newly generated LLaVA caption tokens."
     )
     parser.add_argument(
+        "--cluster_caption_image_mode", choices=("representative", "montage_neighbors"),
+        default="representative",
+        help="Caption one representative or a 2x2 montage of its nearest VAE neighbors."
+    )
+    parser.add_argument(
+        "--cluster_caption_neighbor_count", type=int, default=4,
+        help="Number of nearest images used by montage_neighbors mode."
+    )
+    parser.add_argument(
+        "--cluster_caption_montage_tile_size", type=int, default=336,
+        help="Pixel size of each square tile in a caption montage."
+    )
+    parser.add_argument(
+        "--cluster_caption_montage_dir", type=str, default=None,
+        help="Optional montage output directory; defaults beside the caption manifest."
+    )
+    parser.add_argument(
         "--cluster_caption_instruction", type=str,
         default=(
             "Describe the physical appearance of the {class_name} in the image. "
@@ -420,6 +437,11 @@ def get_args():
                                             f"gamma-{args.CoDA_guidance_scale}/n_{args.n_neighbors}_s_{args.min_cluster_size}")
     if args.cluster_caption_file is None:
         args.cluster_caption_file = os.path.join(args.save_dir, "cluster_captions.json")
+    if args.cluster_caption_montage_dir is None:
+        caption_stem = os.path.splitext(os.path.basename(args.cluster_caption_file))[0]
+        args.cluster_caption_montage_dir = os.path.join(
+            args.save_dir, "caption_montages", caption_stem
+        )
     if args.generated_images_dirname is None:
         args.generated_images_dirname = (
             "generated_images_vlm_caption" if args.use_cluster_captions else "generated_images"
@@ -440,6 +462,12 @@ def get_args():
             )
     if args.generate_cluster_captions and "{class_name}" not in args.cluster_caption_instruction:
         raise ValueError("--cluster_caption_instruction must contain {class_name}")
+    if args.cluster_caption_neighbor_count < 1:
+        parser.error("--cluster_caption_neighbor_count must be positive.")
+    if args.cluster_caption_image_mode == "montage_neighbors" and args.cluster_caption_neighbor_count != 4:
+        parser.error("montage_neighbors currently requires --cluster_caption_neighbor_count 4.")
+    if args.cluster_caption_montage_tile_size < 1:
+        parser.error("--cluster_caption_montage_tile_size must be positive.")
 
     os.makedirs(args.specific_cluster_dir, exist_ok=True)
     os.makedirs(args.plot_dir, exist_ok=True)
