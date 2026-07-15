@@ -74,7 +74,7 @@ def _fit_caption_to_clip(args, pipeline, class_name, caption):
 
 def _build_generation_prompt(args, class_id, class_name, shift, pipeline=None):
     if not args.use_cluster_captions:
-        return class_name
+        return args.base_prompt_template.format(class_name=class_name).strip()
 
     try:
         caption = args._cluster_captions[class_id][str(shift)].strip()
@@ -94,9 +94,11 @@ def _write_prompt_config(args):
     output_dir = os.path.join(args.save_dir, args.generated_images_dirname)
     os.makedirs(output_dir, exist_ok=True)
     config = {
-        "method": "cluster_caption" if args.use_cluster_captions else "original_coda",
+        "method": args.experiment_method,
+        "conditioning": "cluster_caption" if args.use_cluster_captions else "base_prompt",
         "prompt_template": (
-            args.cluster_caption_prompt_template if args.use_cluster_captions else "{class_name}"
+            args.cluster_caption_prompt_template if args.use_cluster_captions
+            else args.base_prompt_template
         ),
         "caption_file": os.path.basename(args.cluster_caption_file) if args.use_cluster_captions else None,
         "caption_model": args.cluster_caption_model_path if args.use_cluster_captions else None,

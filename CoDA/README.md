@@ -265,3 +265,38 @@ GENERATE_CAPTIONS=false bash scripts/multiview_caption_experiment.sh
 Resume mode still refuses to overwrite any existing generated dataset.
 To replace captions from a paused pre-generation run after changing the prompt
 policy, add `OVERWRITE_CAPTIONS=true` when resuming.
+
+## Final prompt and refinement controls
+
+The final control matrix separates representative selection, VAE fidelity,
+diffusion refinement, and text complexity across ImageA and ImageB. ImageA uses
+generation seed 0 and ImageB uses seed 1 by default, and each evaluates:
+
+- the selected real representatives;
+- direct VAE reconstruction of the saved representative latents;
+- CoDA with an empty prompt;
+- CoDA with the generic prompt `a natural photo`;
+- original CoDA with the class-name prompt;
+- CoDA with the montage caption.
+
+ImageA reuses both generated datasets and classifier results for class-prompt
+and montage conditions from `imageA_multiview_v0/seed_0`. It generates only the
+empty and generic conditions. ImageB generates all four diffusion conditions,
+while real representatives and VAE reconstructions never run diffusion.
+
+```bash
+bash scripts/final_prompt_controls_experiment.sh
+```
+
+Set `RUN_DOWNSTREAM_TRAINING=false` to finish generation first. Resume or retry
+only incomplete classifier runs with the printed run ID:
+
+```bash
+RUN_ID=<final control run ID> bash scripts/train_final_prompt_controls.sh
+```
+
+The summary is stored in
+`trained_results/final_prompt_controls/<RUN_ID>/summary/`, including overall
+method differences for both subsets and a per-class CSV. Override
+`IMAGEA_REFERENCE_RUN_ID`, `IMAGEA_SEED`, or `IMAGEB_SEED` only when selecting a
+different completed reference run.

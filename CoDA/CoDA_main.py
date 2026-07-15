@@ -329,6 +329,10 @@ def get_args():
     # For generate, the set G
     parser.add_argument("--generate_images",     action="store_true", default=False, help="Generate images.")
     parser.add_argument(
+        "--base_prompt_template", type=str, default="{class_name}",
+        help="Prompt template for non-caption generation. May be empty or contain {class_name}."
+    )
+    parser.add_argument(
         "--measure_guidance_conflict", action="store_true", default=False,
         help="Save per-sample, per-step text/image guidance conflict metrics and plots."
     )
@@ -464,6 +468,10 @@ def get_args():
             raise ValueError(
                 "--cluster_caption_prompt_template must contain " + ", ".join(missing_template_fields)
             )
+    try:
+        args.base_prompt_template.format(class_name="example")
+    except (KeyError, ValueError) as error:
+        parser.error(f"Invalid --base_prompt_template: {error}")
     if args.generate_cluster_captions and "{class_name}" not in args.cluster_caption_instruction:
         raise ValueError("--cluster_caption_instruction must contain {class_name}")
     if args.cluster_caption_neighbor_count < 1:
