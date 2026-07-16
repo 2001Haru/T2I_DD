@@ -300,3 +300,53 @@ The summary is stored in
 method differences for both subsets and a per-class CSV. Override
 `IMAGEA_REFERENCE_RUN_ID`, `IMAGEA_SEED`, or `IMAGEB_SEED` only when selecting a
 different completed reference run.
+
+## SDXL prior compatibility diagnostic
+
+The Prior Compatibility Score (PCS) tests whether SDXL's class-conditioned
+denoiser is a useful local model for a saved CoDA representative. For the same
+representative latent, timestep, and sampled noise, it compares conditional and
+unconditional noise-prediction errors:
+
+```text
+PCS = (MSE_unconditional - MSE_class_conditioned) / MSE_unconditional
+```
+
+A positive value means that the ImageNet class name helps SDXL explain that
+noisy representative. The primary downstream target is fixed in advance as
+`class_prompt_mean - vae_reconstruction_mean`. This is the cleanest available
+comparison because both methods start from the same saved cluster center, while
+only the class-prompt condition runs diffusion refinement. No PCS threshold is
+fit on the 20 classes: the diagnostic reports rank correlation and separately
+tests the natural rule `PCS > 0`.
+
+Run ImageA and ImageB concurrently on two GPUs after the final prompt-control
+summary has been produced:
+
+```bash
+FINAL_CONTROL_RUN_ID=final_prompt_controls_v0 \
+PCS_RUN_ID=pcs_v0 \
+bash scripts/pcs_diagnostic_experiment.sh
+```
+
+Set `FINAL_CONTROL_RUN_ID` to the directory name under
+`trained_results/final_prompt_controls/` that contains
+`summary/per_class_comparison.csv`. GPU assignment can be changed with
+`PCS_GPU_A` and `PCS_GPU_B`. The default evaluates all ten representatives per
+class at eight fixed training timesteps and does not generate images or train a
+classifier. Follow progress with:
+
+```bash
+tail -f results/pcs_diagnostics/pcs_v0/imageA.log
+tail -f results/pcs_diagnostics/pcs_v0/imageB.log
+```
+
+Each subset stores `pcs_raw.csv`, `pcs_per_class.csv`,
+`pcs_per_class_timestep.csv`, `pcs_per_timestep.csv`, and `pcs_config.json`. The combined `analysis/`
+directory stores the merged class table, Pearson/Spearman statistics, the fixed
+zero-threshold decision test, and `pcs_accuracy_relationship.png`. Treat the
+separate ImageA and ImageB Spearman correlations for `delta_class_vs_vae` as
+the main result; the normalized combined correlation and other accuracy deltas
+are supporting diagnostics. `pcs_timestep_correlations.png` checks whether the
+relationship is concentrated at a particular noise level; because it compares
+multiple timesteps, treat it as exploratory rather than the primary test.
