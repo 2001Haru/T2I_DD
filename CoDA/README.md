@@ -350,3 +350,23 @@ the main result; the normalized combined correlation and other accuracy deltas
 are supporting diagnostics. `pcs_timestep_correlations.png` checks whether the
 relationship is concentrated at a particular noise level; because it compares
 multiple timesteps, treat it as exploratory rather than the primary test.
+
+The analyzer also computes the symmetric logarithmic score directly from the
+saved unconditional and conditional MSE values:
+
+```text
+PCS_log = mean(log(MSE_unconditional) - log(MSE_class_conditioned))
+```
+
+An existing PCS run does not need any new SDXL inference. Reanalyze `pcs_v0`
+without overwriting its original `analysis/` directory using:
+
+```bash
+PCS_RUN_ID=pcs_v0 bash scripts/reanalyze_pcs_log.sh
+```
+
+The new outputs are stored in `results/pcs_diagnostics/pcs_v0/analysis_log/`.
+The command prints the old and logarithmic Spearman correlations together with
+the fixed `PCS_log > 0` selection accuracy. Detailed results include
+`pcs_log_per_class.csv`, `pcs_log_accuracy_relationship.png`, and a two-panel
+linear/logarithmic timestep comparison.

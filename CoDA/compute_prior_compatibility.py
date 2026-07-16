@@ -141,6 +141,16 @@ def _aggregate(records, keys):
             "conditional_mse_mean": float(np.mean([item["conditional_mse"] for item in items])),
             "record_count": len(items),
         })
+        if "pcs_log" in first:
+            pcs_log = np.asarray([item["pcs_log"] for item in items], dtype=np.float64)
+            row.update({
+                "pcs_log_mean": float(np.mean(pcs_log)),
+                "pcs_log_median": float(np.median(pcs_log)),
+                "pcs_log_std": (
+                    float(np.std(pcs_log, ddof=1)) if len(pcs_log) > 1 else 0.0
+                ),
+                "pcs_log_positive_fraction": float(np.mean(pcs_log > 0.0)),
+            })
         rows.append(row)
     return sorted(rows, key=lambda row: tuple(row[name] for name in keys))
 
@@ -266,6 +276,10 @@ def main():
             unconditional_mse = (unconditional.float() - target.float()).square().mean(dim=reduce_dims)
             conditional_mse = (conditional.float() - target.float()).square().mean(dim=reduce_dims)
             pcs = (unconditional_mse - conditional_mse) / unconditional_mse.clamp_min(1e-12)
+            pcs_log = (
+                torch.log(unconditional_mse.clamp_min(1e-12))
+                - torch.log(conditional_mse.clamp_min(1e-12))
+            )
 
             for index, item in enumerate(batch):
                 records.append({
@@ -279,6 +293,7 @@ def main():
                     "unconditional_mse": float(unconditional_mse[index].item()),
                     "conditional_mse": float(conditional_mse[index].item()),
                     "pcs": float(pcs[index].item()),
+                    "pcs_log": float(pcs_log[index].item()),
                 })
 
     os.makedirs(args.output_dir)
@@ -294,7 +309,7 @@ def main():
     )
     _write_csv(os.path.join(args.output_dir, "pcs_per_timestep.csv"), timestep_rows)
     metadata = {
-        "format_version": 1,
+        "format_version": 2,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "spec": args.spec,
         "class_ids": class_ids,
@@ -302,6 +317,7 @@ def main():
         "timesteps": timestep_values,
         "seed": args.seed,
         "pcs_definition": "(unconditional_mse - conditional_mse) / unconditional_mse",
+        "pcs_log_definition": "log(unconditional_mse) - log(conditional_mse)",
         "condition_prompt": "first ImageNet class name",
         "unconditional_prompt": None,
         "prediction_type": scheduler.config.prediction_type,
