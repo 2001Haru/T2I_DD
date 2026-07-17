@@ -57,6 +57,8 @@ temp/
 
 # Note
 
+docker/
+Dockerfile
 encoders.py
 /*.pdf
 /*.md

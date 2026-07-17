@@ -465,3 +465,41 @@ export CLASS_ORACLE_RUN_ID=class_oracle_v0
 export FINAL_CONTROL_RUN_ID=final_prompt_controls_v0
 bash scripts/train_class_oracle_run.sh
 ```
+
+### Cross-fitted paired validation
+
+The first oracle estimate selects the larger of two noisy endpoint means, so its
+expected accuracy can be optimistically biased. Validate the fixed class choices
+with disjoint classifier seeds while training all-real, all-Diffusion, and the
+same hybrid dataset under identical seeds:
+
+```bash
+export CLASS_ORACLE_RUN_ID=class_oracle_v0
+export PAIRED_ORACLE_RUN_ID=class_oracle_v0_paired_v0
+export FINAL_CONTROL_RUN_ID=final_prompt_controls_v0
+export EVAL_SEED_STARTS="2 4"
+bash scripts/paired_class_oracle_validation.sh
+```
+
+With two visible GPUs, each seed start launches a pair of classifier seeds, so
+the default evaluates seeds `2,3,4,5`. These must not overlap the selection
+seeds recorded by the oracle endpoint files. No images are generated or copied;
+the script only retrains classifiers against the existing real, Diffusion, and
+hybrid directories.
+
+For an interrupted run, reuse completed method/seed pairs with:
+
+```bash
+export CLASS_ORACLE_RUN_ID=class_oracle_v0
+export PAIRED_ORACLE_RUN_ID=class_oracle_v0_paired_v0
+export EVAL_SEED_STARTS="2 4"
+export RESUME_RUN=true
+bash scripts/paired_class_oracle_validation.sh
+```
+
+Results are isolated under
+`trained_results/paired_class_oracle_runs/<PAIRED_ORACLE_RUN_ID>/`. The summary
+contains paired seed and class CSV files, JSON statistics, and plots. Its primary
+quantity is the same-seed difference between hybrid accuracy and the class-wise
+selected endpoint accuracy, which removes the original max-of-noisy-means
+comparison from evaluation.
