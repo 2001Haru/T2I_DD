@@ -425,3 +425,43 @@ distance, uniform neighborhood weights, four network seeds, and four
 augmentations. `NEIGHBOR_COUNT`, `MODEL_SEEDS`, `GM_AUGMENTATIONS`, and
 `GM_BATCH_SIZE` are configurable, but ImageA/B accuracy should not be used to
 choose the reported configuration. Keep ImageC untouched for confirmation.
+
+## Diagnostic class oracle
+
+The class-oracle experiment asks whether independently best class pools remain
+best after they are combined into one dataset. For each class, it uses the
+existing downstream per-class means to select all ten real representatives or
+all ten class-prompt Diffusion images. This deliberately leaks validation
+performance and therefore is an optimistic diagnostic, not a selection method.
+
+Run the build and two downstream classifier evaluations with:
+
+```bash
+export CLASS_ORACLE_RUN_ID=class_oracle_v0
+export FINAL_CONTROL_RUN_ID=final_prompt_controls_v0
+bash scripts/class_oracle_experiment.sh
+```
+
+The expected independent oracle accuracy is the class average
+`mean_c(max(Acc_real_c, Acc_diffusion_c))`. After training the combined oracle
+dataset, the summary reports:
+
+```text
+interaction_gap = actual_oracle_accuracy - expected_independent_oracle_accuracy
+```
+
+A negative gap means that independently favorable class choices do not compose
+without loss. The output also reports oracle gain over the better all-real or
+all-Diffusion endpoint. Datasets and manifests are stored in
+`results/class_oracle_runs/<RUN_ID>/`; trained classifiers, per-class
+interaction shifts, and `class_oracle_interaction_gap.png` are stored in
+`trained_results/class_oracle_runs/<RUN_ID>/`.
+
+If dataset construction finishes but training is interrupted, resume without
+rebuilding it:
+
+```bash
+export CLASS_ORACLE_RUN_ID=class_oracle_v0
+export FINAL_CONTROL_RUN_ID=final_prompt_controls_v0
+bash scripts/train_class_oracle_run.sh
+```
