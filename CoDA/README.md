@@ -370,3 +370,58 @@ The command prints the old and logarithmic Spearman correlations together with
 the fixed `PCS_log > 0` selection accuracy. Detailed results include
 `pcs_log_per_class.csv`, `pcs_log_accuracy_relationship.png`, and a two-panel
 linear/logarithmic timestep comparison.
+
+## Gradient-guided candidate selection
+
+The gradient-selection experiment treats each real CoDA representative and its
+matching class-prompt Diffusion output as a pair. For each pair it builds an
+independent local target from 32 same-class ImageNet training images in the
+cached SDXL-VAE feature space. The representative source itself is always
+excluded from this neighborhood, preventing a trivial self-match.
+
+For four random ResNet-AP-10 initializations and four augmentation draws, the
+selector analytically computes the final-layer cross-entropy gradient from the
+network feature and softmax residual. It records the candidate-to-neighborhood
+cosine score `G`, then enumerates all `2^10` ways to choose exactly one image
+from each real/Diffusion pair. The chosen set minimizes mean relative gradient
+error across the 16 runs. A random control is constructed with exactly the same
+number of Diffusion images per class as the selected set.
+
+The default paths reuse `final_prompt_controls_v0` and the existing ImageA
+multiview baseline. No SDXL or LLaVA inference is run:
+
+```bash
+GRADIENT_SELECTION_RUN_ID=gm_v0 \
+FINAL_CONTROL_RUN_ID=final_prompt_controls_v0 \
+bash scripts/gradient_selection_experiment.sh
+```
+
+ImageA and ImageB gradient computation runs concurrently on GPUs 0 and 1.
+Progress and failures are written to:
+
+```bash
+tail -f results/gradient_selection_runs/gm_v0/imageA.log
+tail -f results/gradient_selection_runs/gm_v0/imageB.log
+```
+
+Set `RUN_DOWNSTREAM_TRAINING=false` to stop after selection. Resume only the
+classifier stage with:
+
+```bash
+GRADIENT_SELECTION_RUN_ID=gm_v0 \
+FINAL_CONTROL_RUN_ID=final_prompt_controls_v0 \
+bash scripts/train_gradient_selection_run.sh
+```
+
+Each subset stores `neighbor_manifest.json`, raw and summarized pair scores,
+`class_diagnostics.csv`, diagnostic plots, and the two image folders
+`selected_gm/` and `selected_random_matched/`. Classifier results and the
+cross-subset summary are stored under
+`trained_results/gradient_selection_runs/<RUN_ID>/`. Existing run directories
+and incomplete classifier directories are never overwritten.
+
+The preregistered primary configuration is `K=32`, class-standardized VAE L2
+distance, uniform neighborhood weights, four network seeds, and four
+augmentations. `NEIGHBOR_COUNT`, `MODEL_SEEDS`, `GM_AUGMENTATIONS`, and
+`GM_BATCH_SIZE` are configurable, but ImageA/B accuracy should not be used to
+choose the reported configuration. Keep ImageC untouched for confirmation.
