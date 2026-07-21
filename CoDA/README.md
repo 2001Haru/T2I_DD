@@ -503,3 +503,52 @@ contains paired seed and class CSV files, JSON statistics, and plots. Its primar
 quantity is the same-seed difference between hybrid accuracy and the class-wise
 selected endpoint accuracy, which removes the original max-of-noisy-means
 comparison from evaluation.
+
+## Final Montage and conflict-control confirmation
+
+This experiment returns to the two explicit-text settings that showed weak but
+potentially useful signals. It evaluates four nested conditions on ImageA,
+ImageB, and the held-out ImageC subset, using generation seeds 0 and 1:
+
+- original CoDA with its class-name prompt;
+- the four-neighbor Montage common-mode caption;
+- Montage plus Soft Projection with `alpha=0.5`;
+- Montage plus Kappa Cap with `tau=0.3`.
+
+Soft Projection and Kappa Cap are separate arms because both modify the same
+conflicting image-guidance component. ImageA and ImageB are development subsets;
+ImageC is a one-time confirmation subset and should not be used for another
+round of tuning.
+
+The default run automatically reuses completed ImageA baseline/Montage results
+from `imageA_multiview_v0` and ImageB seed-1 baseline/Montage results from
+`final_prompt_controls_v0`. Missing conditions, including all ImageC conditions,
+are generated and trained normally:
+
+```bash
+export FINAL_MONTAGE_RUN_ID=final_montage_conflict_v0
+bash scripts/final_montage_conflict_experiment.sh
+```
+
+With the default references this reuses 6 of the 24 dataset conditions and runs
+the remaining 18. If interrupted, use the same ID and enable resume mode:
+
+```bash
+export FINAL_MONTAGE_RUN_ID=final_montage_conflict_v0
+export RESUME_RUN=true
+bash scripts/final_montage_conflict_experiment.sh
+```
+
+The script validates each reused dataset before linking it into the new run,
+refuses to replace partial outputs, prepares missing ImageC feature/cluster
+artifacts, and records all new outputs under independent run directories. Set
+`IMAGEA_REFERENCE_RUN_ID`, `IMAGEB_REFERENCE_RUN_ID`, or
+`IMAGEB_REFERENCE_SEED` when the completed reference IDs differ. Arbitrary
+existing conditions can be supplied with variables such as
+`IMAGEB_SEED0_CODA_BASELINE_DATA_DIR` and the corresponding `_RESULT_DIR`.
+
+The final report is written to
+`trained_results/final_montage_conflict_runs/<RUN_ID>/summary/`. It reports
+classifier-seed-paired differences for Montage versus baseline, Soft Projection
+versus Montage, and Kappa Cap versus Montage, both per generation seed and per
+subset. ImageC is labeled as held out in the JSON summary and plots.

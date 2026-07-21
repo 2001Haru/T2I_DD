@@ -252,18 +252,23 @@ def summarize(inputs, output_dir):
     figure.savefig(os.path.join(output_dir, "paired_interaction_gap_by_seed.png"), dpi=180)
     plt.close(figure)
 
-    labels = [f"{row['spec']}:{row['class_name']}" for row in class_summary]
-    means = [row["paired_shift_mean"] for row in class_summary]
-    figure_height = max(5.0, 0.32 * len(labels))
-    figure, axis = plt.subplots(figsize=(9, figure_height))
-    positions = np.arange(len(labels))
-    colors = ["tab:red" if value < 0 else "tab:green" for value in means]
-    axis.barh(positions, means, color=colors)
-    axis.axvline(0.0, color="black", linewidth=1)
-    axis.set_yticks(positions, labels)
-    axis.invert_yaxis()
-    axis.set_xlabel("Mean paired class interaction shift")
-    axis.set_title("Fixed class choices under disjoint paired evaluation seeds")
+    figure, axes = plt.subplots(
+        1, len(results), figsize=(6.5 * len(results), 6), squeeze=False, sharex=True,
+    )
+    for axis, result in zip(axes[0], results):
+        rows = result["class_summary"]
+        labels = [row["class_name"].split(",", 1)[0] for row in rows]
+        means = [row["paired_shift_mean"] for row in rows]
+        errors = [row["paired_shift_std"] for row in rows]
+        positions = np.arange(len(labels))
+        colors = ["tab:red" if value < 0 else "tab:green" for value in means]
+        axis.barh(positions, means, xerr=errors, color=colors, alpha=0.9)
+        axis.axvline(0.0, color="black", linewidth=1)
+        axis.set_yticks(positions, labels)
+        axis.invert_yaxis()
+        axis.set_xlabel("Mean paired interaction shift")
+        axis.set_title(result["spec"])
+    figure.suptitle("Fixed class choices under disjoint paired evaluation seeds")
     figure.tight_layout()
     figure.savefig(os.path.join(output_dir, "paired_class_interaction_shifts.png"), dpi=180)
     plt.close(figure)
