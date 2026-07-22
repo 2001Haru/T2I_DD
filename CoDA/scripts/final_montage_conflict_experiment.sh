@@ -23,6 +23,7 @@ KAPPA_CAP="${KAPPA_CAP:-0.3}"
 RUN_ID="${FINAL_MONTAGE_RUN_ID:-final_montage_conflict_$(date -u +%Y%m%dT%H%M%SZ)}"
 RESUME_RUN="${RESUME_RUN:-false}"
 REUSE_EXISTING="${REUSE_EXISTING:-true}"
+ARCHIVE_INCOMPLETE_CLASSIFIERS="${ARCHIVE_INCOMPLETE_CLASSIFIERS:-$RESUME_RUN}"
 PREPARE_MISSING_CLUSTERS="${PREPARE_MISSING_CLUSTERS:-true}"
 RUN_GENERATION="${RUN_GENERATION:-true}"
 RUN_DOWNSTREAM_TRAINING="${RUN_DOWNSTREAM_TRAINING:-true}"
@@ -379,9 +380,38 @@ train_variant() {
             return
         fi
     fi
-    if [[ -e "$save_dir" || -e "${save_dir}_gpu${EVAL_SEED}" || -e "${save_dir}_gpu$((EVAL_SEED + 1))" ]]; then
-        echo "Incomplete classifier output exists; refusing to mix runs: ${save_dir}" >&2
-        exit 1
+    local partial_artifacts=(
+        "$save_dir"
+        "${save_dir}_gpu${EVAL_SEED}"
+        "${save_dir}_gpu$((EVAL_SEED + 1))"
+    )
+    local has_partial=false
+    local artifact
+    for artifact in "${partial_artifacts[@]}"; do
+        if [[ -e "$artifact" || -L "$artifact" ]]; then
+            has_partial=true
+        fi
+    done
+    if [[ "$has_partial" == "true" ]]; then
+        if [[ "$ARCHIVE_INCOMPLETE_CLASSIFIERS" != "true" ]]; then
+            echo "Incomplete classifier output exists; refusing to mix runs: ${save_dir}" >&2
+            echo "Resume with ARCHIVE_INCOMPLETE_CLASSIFIERS=true to archive it and restart this condition." >&2
+            exit 1
+        fi
+        local archive_dir archive_stamp
+        archive_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+        archive_dir="${SAVE_ROOT}/incomplete_classifier_archives/${spec}/seed_${seed}/${method}/${archive_stamp}"
+        if [[ -e "$archive_dir" ]]; then
+            echo "Incomplete-classifier archive already exists: ${archive_dir}" >&2
+            exit 1
+        fi
+        mkdir -p "$archive_dir"
+        for artifact in "${partial_artifacts[@]}"; do
+            if [[ -e "$artifact" || -L "$artifact" ]]; then
+                mv -- "$artifact" "$archive_dir/"
+            fi
+        done
+        echo "==> Archived incomplete classifier to ${archive_dir}"
     fi
     if [[ "$RUN_DOWNSTREAM_TRAINING" != "true" ]]; then
         echo "Missing classifier result with RUN_DOWNSTREAM_TRAINING=false: ${result_file}" >&2

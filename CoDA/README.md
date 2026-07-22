@@ -539,8 +539,17 @@ export RESUME_RUN=true
 bash scripts/final_montage_conflict_experiment.sh
 ```
 
+If interruption leaves partial downstream-training directories, resume mode
+moves the base and per-GPU directories into
+`incomplete_classifier_archives/` and restarts only that classifier condition
+from epoch 0. Completed generated datasets and classifier conditions are still
+reused. Set `ARCHIVE_INCOMPLETE_CLASSIFIERS=false` to retain the stricter
+stop-on-partial behavior. Direct checkpoint continuation is intentionally not
+used because the current training code does not restore the learning-rate
+scheduler state and therefore would not be equivalent to an uninterrupted run.
+
 The script validates each reused dataset before linking it into the new run,
-refuses to replace partial outputs, prepares missing ImageC feature/cluster
+archives partial classifier outputs, prepares missing ImageC feature/cluster
 artifacts, and records all new outputs under independent run directories. Set
 `IMAGEA_REFERENCE_RUN_ID`, `IMAGEB_REFERENCE_RUN_ID`, or
 `IMAGEB_REFERENCE_SEED` when the completed reference IDs differ. Arbitrary
