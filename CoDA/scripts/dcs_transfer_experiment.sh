@@ -24,6 +24,8 @@ DCS_THRESHOLD="${DCS_THRESHOLD:-0.7}"
 DCS_TOP_K="${DCS_TOP_K:-30}"
 DCS_MAX_NEW_TOKENS="${DCS_MAX_NEW_TOKENS:-128}"
 DCS_MAX_CAPTION_WORDS="${DCS_MAX_CAPTION_WORDS:-0}"
+DCS_MAX_IMAGES_PER_CLUSTER="${DCS_MAX_IMAGES_PER_CLUSTER:-0}"
+DCS_CAPTION_BATCH_SIZE="${DCS_CAPTION_BATCH_SIZE:-1}"
 DCS_CAPTION_GPU_COUNT="${DCS_CAPTION_GPU_COUNT:-1}"
 DCS_CAPTION_VISIBLE_DEVICES="${DCS_CAPTION_VISIBLE_DEVICES:-0}"
 DCS_PROMPT_TEMPLATE="${DCS_PROMPT_TEMPLATE:-}"
@@ -134,6 +136,8 @@ DCS_THRESHOLD=${DCS_THRESHOLD}
 DCS_TOP_K=${DCS_TOP_K}
 DCS_MAX_NEW_TOKENS=${DCS_MAX_NEW_TOKENS}
 DCS_MAX_CAPTION_WORDS=${DCS_MAX_CAPTION_WORDS}
+DCS_MAX_IMAGES_PER_CLUSTER=${DCS_MAX_IMAGES_PER_CLUSTER}
+DCS_CAPTION_BATCH_SIZE=${DCS_CAPTION_BATCH_SIZE}
 DCS_PROMPT_TEMPLATE=${DCS_PROMPT_TEMPLATE}
 DCS_INSTRUCTION=${DCS_INSTRUCTION}"
 if [[ -f "$CONFIG_FILE" ]]; then
@@ -174,7 +178,7 @@ build_dcs_file() {
     local run_dir cache_dir output_file
     run_dir="$(spec_run_dir "$spec")"
     cache_dir="./results/dcs_caption_cache/${spec}/vlcp_dcs_class_aware"
-    output_file="${run_dir}/captions_dcs_t${DCS_THRESHOLD}_k${DCS_TOP_K}.json"
+    output_file="${run_dir}/captions_dcs_t${DCS_THRESHOLD}_k${DCS_TOP_K}_m${DCS_MAX_IMAGES_PER_CLUSTER}.json"
     if [[ -f "$output_file" ]]; then
         echo "==> Reusing ${spec} DCS manifest" >&2
         echo "$output_file"
@@ -187,8 +191,11 @@ build_dcs_file() {
             --spec "$spec" --misc-dir ./misc
             --features-cache-path "./results/clusterfile/${spec}/original_features_cache.pkl"
             --caption-cache-dir "$cache_dir"
+            --specific-cluster-dir "./results/clusterfile/${spec}"
+            --saved-clusters-base-name "${IPC}_n_${N_NEIGHBORS}_s_${MIN_CLUSTER_SIZE}_saved_clusters.pkl"
+            --ipc "$IPC" --max-images-per-cluster "$DCS_MAX_IMAGES_PER_CLUSTER"
             --model "$VLM_MODEL" --instruction "$DCS_INSTRUCTION"
-            --max-new-tokens "$DCS_MAX_NEW_TOKENS"
+            --max-new-tokens "$DCS_MAX_NEW_TOKENS" --batch-size "$DCS_CAPTION_BATCH_SIZE"
         )
         if [[ "$DCS_CAPTION_GPU_COUNT" == "1" ]]; then
             if ! CUDA_VISIBLE_DEVICES="$DCS_CAPTION_VISIBLE_DEVICES" \
@@ -212,7 +219,8 @@ build_dcs_file() {
             --caption-cache-dir "$cache_dir" \
             --specific-cluster-dir "./results/clusterfile/${spec}" \
             --saved-clusters-base-name "${IPC}_n_${N_NEIGHBORS}_s_${MIN_CLUSTER_SIZE}_saved_clusters.pkl" \
-            --ipc "$IPC" --threshold "$DCS_THRESHOLD" --top-k "$DCS_TOP_K" \
+            --ipc "$IPC" --max-images-per-cluster "$DCS_MAX_IMAGES_PER_CLUSTER" \
+            --threshold "$DCS_THRESHOLD" --top-k "$DCS_TOP_K" \
             --max-caption-words "$DCS_MAX_CAPTION_WORDS" \
             --output "$output_file" 1>&2; then
         echo "DCS manifest construction failed for ${spec}." >&2

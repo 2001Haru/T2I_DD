@@ -623,3 +623,19 @@ discarding either rank shard. Set `DCS_CAPTION_GPU_COUNT=2` and
 Set `RUN_DCS_CAPTIONING=false` after caption caches are complete to rebuild only
 the DCS selection manifest. The defaults match VLCP ImageNet parameters:
 `DCS_THRESHOLD=0.7`, `DCS_TOP_K=30`, and no extra caption word truncation.
+
+For a compute-limited pilot, caption only the 50 nearest assigned images per
+representative:
+
+```bash
+export SPECS=imageA
+export DCS_MAX_IMAGES_PER_CLUSTER=50
+export DCS_TRANSFER_RUN_ID=dcs_transfer_imageA_m50_v0
+bash scripts/dcs_transfer_experiment.sh
+```
+
+This caps ImageA at 500 captions instead of roughly 13,000. It is a
+cluster-balanced approximation to VLCP DCS rather than the full-data method.
+The manifest records original and sampled cluster sizes. `0` restores the full
+method. `DCS_CAPTION_BATCH_SIZE=2` can improve throughput on GPUs with spare
+memory, but the default remains `1` for constrained V100 servers.

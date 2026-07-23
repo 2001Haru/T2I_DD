@@ -16,9 +16,16 @@ from collections import Counter
 from datetime import datetime, timezone
 
 import numpy as np
+import torch
+from PIL import Image
 from tqdm import tqdm
 
-from cluster_caption import _generate_caption, _load_llava, _write_json
+from cluster_caption import (
+    _build_llava_prompt,
+    _generate_caption,
+    _load_llava,
+    _write_json,
+)
 
 
 DEFAULT_INSTRUCTION = (
@@ -96,6 +103,62 @@ def load_feature_records(args):
     return selected, records
 
 
+def _center_path(args, chunk_id):
+    base, extension = os.path.splitext(args.saved_clusters_base_name)
+    return os.path.join(args.specific_cluster_dir, f"{base}_{chunk_id}{extension}")
+
+
+def assign_and_sample_records(args, selected, records):
+    """Assign all images to representatives, then retain nearest M per cluster."""
+    sampled = {}
+    center_cache = {}
+    for local_label, class_id in enumerate(selected):
+        chunk_id = local_label // 10
+        if chunk_id not in center_cache:
+            center_cache[chunk_id] = _load_pickle(_center_path(args, chunk_id))
+        centers = _flat_features(center_cache[chunk_id][local_label])
+        if len(centers) != args.ipc:
+            raise ValueError(
+                f"Expected {args.ipc} centers for {class_id}, found {len(centers)}."
+            )
+        features = records[class_id]["features"]
+        distances = (
+            np.sum(features * features, axis=1, keepdims=True)
+            + np.sum(centers * centers, axis=1)[None, :]
+            - 2.0 * features @ centers.T
+        )
+        assignments = np.argmin(distances, axis=1)
+        empty = sorted(set(range(args.ipc)) - set(assignments.tolist()))
+        if empty:
+            raise ValueError(
+                f"Nearest-center assignment produced empty clusters for {class_id}: {empty}."
+            )
+
+        selected_indices = []
+        original_counts = {}
+        sampled_counts = {}
+        for cluster_index in range(args.ipc):
+            member_indices = np.flatnonzero(assignments == cluster_index)
+            original_counts[cluster_index] = len(member_indices)
+            order = np.lexsort(
+                (member_indices, distances[member_indices, cluster_index])
+            )
+            member_indices = member_indices[order]
+            if args.max_images_per_cluster > 0:
+                member_indices = member_indices[:args.max_images_per_cluster]
+            sampled_counts[cluster_index] = len(member_indices)
+            selected_indices.extend(member_indices.tolist())
+
+        selected_indices = np.asarray(selected_indices, dtype=np.int64)
+        sampled[class_id] = {
+            "indices": selected_indices,
+            "assignments": assignments[selected_indices],
+            "original_counts": original_counts,
+            "sampled_counts": sampled_counts,
+        }
+    return sampled
+
+
 def _caption_config(args):
     return {
         "format_version": 1,
@@ -104,6 +167,63 @@ def _caption_config(args):
         "instruction_template": args.instruction,
         "max_new_tokens": args.max_new_tokens,
     }
+
+
+def _generate_caption_batch(
+    model, processor, dtype, device, tasks, instruction_template, max_new_tokens
+):
+    if len(tasks) == 1:
+        class_id, class_name, image_path = tasks[0]
+        caption = _generate_caption(
+            model=model,
+            processor=processor,
+            dtype=dtype,
+            device=device,
+            image_path=image_path,
+            instruction=instruction_template.format(class_name=class_name),
+            max_new_tokens=max_new_tokens,
+        )
+        return [(class_id, image_path, caption)]
+
+    prompts = [
+        _build_llava_prompt(
+            processor, instruction_template.format(class_name=class_name)
+        )
+        for _, class_name, _ in tasks
+    ]
+    images = []
+    for _, _, image_path in tasks:
+        with Image.open(image_path) as image:
+            images.append(image.convert("RGB"))
+    inputs = processor(
+        text=prompts,
+        images=images,
+        return_tensors="pt",
+        padding=True,
+    )
+    inputs = {key: value.to(device) for key, value in inputs.items()}
+    if "pixel_values" in inputs:
+        inputs["pixel_values"] = inputs["pixel_values"].to(dtype=dtype)
+    with torch.inference_mode():
+        generated_ids = model.generate(
+            **inputs,
+            do_sample=False,
+            max_new_tokens=max_new_tokens,
+            use_cache=True,
+        )
+    prompt_length = inputs["input_ids"].shape[1]
+    captions = processor.batch_decode(
+        generated_ids[:, prompt_length:],
+        skip_special_tokens=True,
+        clean_up_tokenization_spaces=True,
+    )
+    results = []
+    for (class_id, _, image_path), caption in zip(tasks, captions):
+        caption = " ".join(caption.split())
+        if not caption:
+            raise RuntimeError(f"LLaVA returned an empty caption for {image_path}")
+        results.append((class_id, image_path, caption))
+    return results
 
 
 def _read_jsonl(path, allow_incomplete_final=False):
@@ -203,10 +323,12 @@ def caption_images(args):
     }
 
     selected, records = load_feature_records(args)
+    sampled = assign_and_sample_records(args, selected, records)
     tasks = []
     for class_id in selected:
         class_name = records[class_id]["class_name"].split(",")[0].strip()
-        for image_path in records[class_id]["paths"]:
+        for index in sampled[class_id]["indices"]:
+            image_path = records[class_id]["paths"][index]
             tasks.append((class_id, class_name, image_path))
     tasks = [
         task for index, task in enumerate(tasks)
@@ -220,25 +342,27 @@ def caption_images(args):
     print(f"Rank {rank}: loading LLaVA on {device}; {len(tasks)} images remain.")
     processor, model, dtype = _load_llava(args.model, device)
     with open(output_path, "a", encoding="utf-8", buffering=1) as file:
-        for class_id, class_name, image_path in tqdm(
-            tasks, desc=f"Rank {rank} DCS captions"
-        ):
-            instruction = args.instruction.format(class_name=class_name)
-            caption = _generate_caption(
+        progress = tqdm(total=len(tasks), desc=f"Rank {rank} DCS captions")
+        for start in range(0, len(tasks), args.batch_size):
+            batch = tasks[start:start + args.batch_size]
+            results = _generate_caption_batch(
                 model=model,
                 processor=processor,
                 dtype=dtype,
                 device=device,
-                image_path=image_path,
-                instruction=instruction,
+                tasks=batch,
+                instruction_template=args.instruction,
                 max_new_tokens=args.max_new_tokens,
             )
-            row = {
-                "class_id": class_id,
-                "image_path": image_path,
-                "caption": " ".join(caption.split()),
-            }
-            file.write(json.dumps(row, ensure_ascii=False) + "\n")
+            for class_id, image_path, caption in results:
+                row = {
+                    "class_id": class_id,
+                    "image_path": image_path,
+                    "caption": caption,
+                }
+                file.write(json.dumps(row, ensure_ascii=False) + "\n")
+            progress.update(len(batch))
+        progress.close()
 
 
 def _load_stop_words():
@@ -346,11 +470,6 @@ def _load_caption_cache(args, expected_paths):
     return captions, expected_config
 
 
-def _center_path(args, chunk_id):
-    base, extension = os.path.splitext(args.saved_clusters_base_name)
-    return os.path.join(args.specific_cluster_dir, f"{base}_{chunk_id}{extension}")
-
-
 def _trim_caption(caption, max_words):
     if max_words <= 0:
         return caption
@@ -360,8 +479,11 @@ def _trim_caption(caption, max_words):
 
 def build_dcs(args):
     selected, records = load_feature_records(args)
+    sampled = assign_and_sample_records(args, selected, records)
     all_paths = [
-        path for class_id in selected for path in records[class_id]["paths"]
+        records[class_id]["paths"][index]
+        for class_id in selected
+        for index in sampled[class_id]["indices"]
     ]
     captions_by_path, caption_config = _load_caption_cache(args, all_paths)
     payload = {
@@ -371,6 +493,7 @@ def build_dcs(args):
             "spec": args.spec,
             "threshold": args.threshold,
             "top_k": args.top_k,
+            "max_images_per_cluster": args.max_images_per_cluster,
             "max_caption_words": args.max_caption_words,
             "cluster_assignment": "nearest_saved_coda_representative_in_sdxl_vae_space",
             "caption_config": caption_config,
@@ -381,28 +504,10 @@ def build_dcs(args):
         "caption_inputs": {},
         "diagnostics": {},
     }
-    center_cache = {}
-    for local_label, class_id in enumerate(selected):
-        chunk_id = local_label // 10
-        if chunk_id not in center_cache:
-            center_cache[chunk_id] = _load_pickle(_center_path(args, chunk_id))
-        centers = _flat_features(center_cache[chunk_id][local_label])
-        if len(centers) != args.ipc:
-            raise ValueError(f"Expected {args.ipc} centers for {class_id}, found {len(centers)}.")
-        features = records[class_id]["features"]
-        distances = (
-            np.sum(features * features, axis=1, keepdims=True)
-            + np.sum(centers * centers, axis=1)[None, :]
-            - 2.0 * features @ centers.T
-        )
-        assignments = np.argmin(distances, axis=1)
-        empty = sorted(set(range(args.ipc)) - set(assignments.tolist()))
-        if empty:
-            raise ValueError(
-                f"Nearest-center assignment produced empty clusters for {class_id}: {empty}."
-            )
-
-        paths = records[class_id]["paths"]
+    for class_id in selected:
+        indices = sampled[class_id]["indices"]
+        assignments = sampled[class_id]["assignments"]
+        paths = [records[class_id]["paths"][index] for index in indices]
         captions = [captions_by_path[path] for path in paths]
         selected_captions, class_common, diagnostics = select_dcs_captions(
             captions=captions,
@@ -425,6 +530,14 @@ def build_dcs(args):
         payload["diagnostics"][class_id] = {
             "class_name": records[class_id]["class_name"],
             "class_common_words": class_common,
+            "original_cluster_member_counts": {
+                str(key): value
+                for key, value in sampled[class_id]["original_counts"].items()
+            },
+            "sampled_cluster_member_counts": {
+                str(key): value
+                for key, value in sampled[class_id]["sampled_counts"].items()
+            },
             "clusters": {str(key): value for key, value in diagnostics.items()},
         }
 
@@ -440,6 +553,15 @@ def add_common_arguments(parser):
     parser.add_argument("--phase", type=int, default=0)
     parser.add_argument("--features-cache-path", required=True)
     parser.add_argument("--caption-cache-dir", required=True)
+    parser.add_argument("--specific-cluster-dir", required=True)
+    parser.add_argument("--saved-clusters-base-name", required=True)
+    parser.add_argument("--ipc", type=int, default=10)
+    parser.add_argument(
+        "--max-images-per-cluster",
+        type=int,
+        default=0,
+        help="Caption only the M nearest assigned images per representative; 0 uses all images.",
+    )
 
 
 def parse_args():
@@ -451,13 +573,11 @@ def parse_args():
     caption_parser.add_argument("--model", required=True)
     caption_parser.add_argument("--instruction", default=DEFAULT_INSTRUCTION)
     caption_parser.add_argument("--max-new-tokens", type=int, default=128)
+    caption_parser.add_argument("--batch-size", type=int, default=1)
     caption_parser.add_argument("--device", default="cuda")
 
     build_parser = subparsers.add_parser("build")
     add_common_arguments(build_parser)
-    build_parser.add_argument("--specific-cluster-dir", required=True)
-    build_parser.add_argument("--saved-clusters-base-name", required=True)
-    build_parser.add_argument("--ipc", type=int, default=10)
     build_parser.add_argument("--threshold", type=float, default=0.7)
     build_parser.add_argument("--top-k", type=int, default=30)
     build_parser.add_argument("--max-caption-words", type=int, default=0)
@@ -467,7 +587,11 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.max_images_per_cluster < 0:
+        raise ValueError("--max-images-per-cluster must be non-negative.")
     if args.command == "caption":
+        if args.batch_size < 1:
+            raise ValueError("--batch-size must be positive.")
         caption_images(args)
     else:
         if not 0.0 <= args.threshold <= 1.0:

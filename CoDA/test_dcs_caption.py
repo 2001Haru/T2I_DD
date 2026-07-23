@@ -1,8 +1,10 @@
 import os
+import pickle
 import sys
 import tempfile
 import unittest
 import json
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -13,6 +15,7 @@ from dcs_caption import (
     _read_jsonl,
     _repair_trailing_jsonl,
     _validate_or_write_rank_config,
+    assign_and_sample_records,
     select_dcs_captions,
     tokenize,
 )
@@ -105,6 +108,32 @@ class DcsCaptionTest(unittest.TestCase):
                 self.assertEqual(
                     json.load(file), {"instruction_template": "fixed"}
                 )
+
+    def test_cluster_balanced_sampling_keeps_nearest_members(self):
+        with tempfile.TemporaryDirectory() as directory:
+            center_path = os.path.join(directory, "centers_0.pkl")
+            with open(center_path, "wb") as file:
+                pickle.dump({0: np.asarray([[0.0], [10.0]], dtype=np.float32)}, file)
+            args = SimpleNamespace(
+                ipc=2,
+                max_images_per_cluster=2,
+                specific_cluster_dir=directory,
+                saved_clusters_base_name="centers.pkl",
+            )
+            records = {
+                "n00000000": {
+                    "features": np.asarray(
+                        [[0.0], [1.0], [2.0], [9.0], [10.0], [12.0]],
+                        dtype=np.float32,
+                    )
+                }
+            }
+            sampled = assign_and_sample_records(
+                args, ["n00000000"], records
+            )["n00000000"]
+            np.testing.assert_array_equal(sampled["indices"], [0, 1, 4, 3])
+            np.testing.assert_array_equal(sampled["assignments"], [0, 0, 1, 1])
+            self.assertEqual(sampled["original_counts"], {0: 3, 1: 3})
 
 
 if __name__ == "__main__":
