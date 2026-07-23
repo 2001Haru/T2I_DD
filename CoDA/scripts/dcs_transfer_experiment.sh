@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+shopt -s inherit_errexit
 
 export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="${PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION:-python}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
@@ -25,8 +26,14 @@ DCS_MAX_NEW_TOKENS="${DCS_MAX_NEW_TOKENS:-128}"
 DCS_MAX_CAPTION_WORDS="${DCS_MAX_CAPTION_WORDS:-0}"
 DCS_CAPTION_GPU_COUNT="${DCS_CAPTION_GPU_COUNT:-1}"
 DCS_CAPTION_VISIBLE_DEVICES="${DCS_CAPTION_VISIBLE_DEVICES:-0}"
-DCS_PROMPT_TEMPLATE="${DCS_PROMPT_TEMPLATE:-An natural photo of a {class_name}, {caption}, centered object.}"
-DCS_INSTRUCTION="${DCS_INSTRUCTION:-Describe the physical appearance of the {class_name} in the image. Include details about its shape, posture, color, and any distinct features.}"
+DCS_PROMPT_TEMPLATE="${DCS_PROMPT_TEMPLATE:-}"
+DCS_INSTRUCTION="${DCS_INSTRUCTION:-}"
+if [[ -z "$DCS_PROMPT_TEMPLATE" ]]; then
+    DCS_PROMPT_TEMPLATE='An natural photo of a {class_name}, {caption}, centered object.'
+fi
+if [[ -z "$DCS_INSTRUCTION" ]]; then
+    DCS_INSTRUCTION='Describe the physical appearance of the {class_name} in the image. Include details about its shape, posture, color, and any distinct features.'
+fi
 RUN_ID="${DCS_TRANSFER_RUN_ID:-dcs_transfer_$(date -u +%Y%m%dT%H%M%SZ)}"
 RESUME_RUN="${RESUME_RUN:-false}"
 PREPARE_MISSING_CLUSTERS="${PREPARE_MISSING_CLUSTERS:-true}"
@@ -184,24 +191,33 @@ build_dcs_file() {
             --max-new-tokens "$DCS_MAX_NEW_TOKENS"
         )
         if [[ "$DCS_CAPTION_GPU_COUNT" == "1" ]]; then
-            CUDA_VISIBLE_DEVICES="$DCS_CAPTION_VISIBLE_DEVICES" \
-                python "${caption_args[@]}" 1>&2
+            if ! CUDA_VISIBLE_DEVICES="$DCS_CAPTION_VISIBLE_DEVICES" \
+                    python "${caption_args[@]}" 1>&2; then
+                echo "DCS image captioning failed for ${spec}; refusing to build a partial manifest." >&2
+                return 1
+            fi
         else
-            CUDA_VISIBLE_DEVICES="$DCS_CAPTION_VISIBLE_DEVICES" \
-                torchrun --standalone --nproc_per_node="$DCS_CAPTION_GPU_COUNT" \
-                "${caption_args[@]}" 1>&2
+            if ! CUDA_VISIBLE_DEVICES="$DCS_CAPTION_VISIBLE_DEVICES" \
+                    torchrun --standalone --nproc_per_node="$DCS_CAPTION_GPU_COUNT" \
+                    "${caption_args[@]}" 1>&2; then
+                echo "DCS image captioning failed for ${spec}; refusing to build a partial manifest." >&2
+                return 1
+            fi
         fi
     fi
     echo "==> Building ${spec} VLCP-style DCS captions" >&2
-    python dcs_caption.py build \
-        --spec "$spec" --misc-dir ./misc \
-        --features-cache-path "./results/clusterfile/${spec}/original_features_cache.pkl" \
-        --caption-cache-dir "$cache_dir" \
-        --specific-cluster-dir "./results/clusterfile/${spec}" \
-        --saved-clusters-base-name "${IPC}_n_${N_NEIGHBORS}_s_${MIN_CLUSTER_SIZE}_saved_clusters.pkl" \
-        --ipc "$IPC" --threshold "$DCS_THRESHOLD" --top-k "$DCS_TOP_K" \
-        --max-caption-words "$DCS_MAX_CAPTION_WORDS" \
-        --output "$output_file" 1>&2
+    if ! python dcs_caption.py build \
+            --spec "$spec" --misc-dir ./misc \
+            --features-cache-path "./results/clusterfile/${spec}/original_features_cache.pkl" \
+            --caption-cache-dir "$cache_dir" \
+            --specific-cluster-dir "./results/clusterfile/${spec}" \
+            --saved-clusters-base-name "${IPC}_n_${N_NEIGHBORS}_s_${MIN_CLUSTER_SIZE}_saved_clusters.pkl" \
+            --ipc "$IPC" --threshold "$DCS_THRESHOLD" --top-k "$DCS_TOP_K" \
+            --max-caption-words "$DCS_MAX_CAPTION_WORDS" \
+            --output "$output_file" 1>&2; then
+        echo "DCS manifest construction failed for ${spec}." >&2
+        return 1
+    fi
     echo "$output_file"
 }
 
@@ -317,7 +333,10 @@ for spec in $SPECS; do
             --output "${run_dir}/dataset_validation.json"
     fi
     ensure_clusters "$spec"
-    dcs_file="$(build_dcs_file "$spec")"
+    if ! dcs_file="$(build_dcs_file "$spec")"; then
+        echo "DCS preparation failed for ${spec}; stopping the experiment." >&2
+        exit 1
+    fi
     if [[ ! -f "$dcs_file" ]]; then
         echo "Missing DCS manifest for ${spec}: ${dcs_file}" >&2
         exit 1

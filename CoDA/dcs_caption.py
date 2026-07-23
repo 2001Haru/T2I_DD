@@ -154,7 +154,7 @@ def _repair_trailing_jsonl(path):
         os.replace(temporary, path)
 
 
-def _validate_or_write_rank_config(path, expected):
+def _validate_or_write_rank_config(path, expected, caption_path=None):
     if os.path.isfile(path):
         with open(path, "r", encoding="utf-8") as file:
             actual = json.load(file)
@@ -162,6 +162,14 @@ def _validate_or_write_rank_config(path, expected):
         # recorded world_size; ignore it so a two-GPU run can resume on one GPU.
         actual.pop("world_size", None)
         if actual != expected:
+            existing_rows = (
+                _read_jsonl(caption_path, allow_incomplete_final=True)
+                if caption_path else []
+            )
+            if not existing_rows:
+                print(f"Replacing stale metadata for empty caption shard: {path}")
+                _write_json(path, expected)
+                return
             raise ValueError(
                 f"Caption cache configuration changed at {path}. "
                 "Use a new --caption-cache-dir to avoid mixing captions."
@@ -177,9 +185,11 @@ def caption_images(args):
     os.makedirs(args.caption_cache_dir, exist_ok=True)
 
     rank_stem = os.path.join(args.caption_cache_dir, f"captions.rank{rank}")
-    config = _caption_config(args)
-    _validate_or_write_rank_config(f"{rank_stem}.meta.json", config)
     output_path = f"{rank_stem}.jsonl"
+    config = _caption_config(args)
+    _validate_or_write_rank_config(
+        f"{rank_stem}.meta.json", config, caption_path=output_path
+    )
     _repair_trailing_jsonl(output_path)
     all_completed_rows = []
     for shard_path in glob.glob(os.path.join(args.caption_cache_dir, "captions.rank*.jsonl")):

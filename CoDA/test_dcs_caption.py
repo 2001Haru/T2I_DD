@@ -90,6 +90,22 @@ class DcsCaptionTest(unittest.TestCase):
                 json.dump({**expected, "world_size": 2}, file)
             _validate_or_write_rank_config(path, expected)
 
+    def test_stale_metadata_is_replaced_for_an_empty_shard(self):
+        with tempfile.TemporaryDirectory() as directory:
+            metadata = os.path.join(directory, "captions.rank0.meta.json")
+            captions = os.path.join(directory, "captions.rank0.jsonl")
+            with open(metadata, "w", encoding="utf-8") as file:
+                json.dump({"instruction_template": "broken"}, file)
+            _validate_or_write_rank_config(
+                metadata,
+                {"instruction_template": "fixed"},
+                caption_path=captions,
+            )
+            with open(metadata, "r", encoding="utf-8") as file:
+                self.assertEqual(
+                    json.load(file), {"instruction_template": "fixed"}
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
