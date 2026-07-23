@@ -60,13 +60,15 @@ def _load_pickle(path):
 
 
 def _flat_features(items):
-    array = np.asarray(items)
-    if array.ndim == 2:
-        return array.astype(np.float32, copy=False)
-    return np.stack([
-        np.asarray(item, dtype=np.float32).reshape(-1)
-        for item in items
-    ])
+    if isinstance(items, np.ndarray) and items.ndim == 2:
+        return items.astype(np.float32, copy=False)
+
+    flattened = []
+    for item in items:
+        if hasattr(item, "detach"):
+            item = item.detach().cpu().numpy()
+        flattened.append(np.asarray(item, dtype=np.float32).reshape(-1))
+    return np.stack(flattened)
 
 
 def load_feature_records(args):

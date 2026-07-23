@@ -7,7 +7,13 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
 
-from dcs_caption import _read_jsonl, _repair_trailing_jsonl, select_dcs_captions, tokenize
+from dcs_caption import (
+    _flat_features,
+    _read_jsonl,
+    _repair_trailing_jsonl,
+    select_dcs_captions,
+    tokenize,
+)
 
 
 class DcsCaptionTest(unittest.TestCase):
@@ -56,6 +62,17 @@ class DcsCaptionTest(unittest.TestCase):
                 file.write('{"caption": "interrupted"')
             _repair_trailing_jsonl(path)
             self.assertEqual(_read_jsonl(path), [{"caption": "complete"}])
+
+    def test_flat_features_accepts_list_of_tensors(self):
+        import torch
+
+        features = [
+            torch.arange(8, dtype=torch.float32).reshape(1, 2, 2, 2),
+            torch.ones((1, 2, 2, 2), dtype=torch.float32),
+        ]
+        flattened = _flat_features(features)
+        self.assertEqual(flattened.shape, (2, 8))
+        np.testing.assert_array_equal(flattened[0], np.arange(8, dtype=np.float32))
 
 
 if __name__ == "__main__":
