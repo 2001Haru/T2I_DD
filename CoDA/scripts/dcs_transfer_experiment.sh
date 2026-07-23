@@ -42,6 +42,7 @@ PREPARE_MISSING_CLUSTERS="${PREPARE_MISSING_CLUSTERS:-true}"
 RUN_DCS_CAPTIONING="${RUN_DCS_CAPTIONING:-true}"
 RUN_GENERATION="${RUN_GENERATION:-true}"
 RUN_DOWNSTREAM_TRAINING="${RUN_DOWNSTREAM_TRAINING:-true}"
+ARCHIVE_INCOMPLETE_GENERATION="${ARCHIVE_INCOMPLETE_GENERATION:-$RESUME_RUN}"
 ARCHIVE_INCOMPLETE_CLASSIFIERS="${ARCHIVE_INCOMPLETE_CLASSIFIERS:-$RESUME_RUN}"
 
 META_ROOT="./results/dcs_transfer_runs/${RUN_ID}"
@@ -234,14 +235,34 @@ generate_variant() {
     local seed=$2
     local method=$3
     local dcs_file=$4
-    local run_dir output_dir output_dirname
+    local run_dir output_dir output_dirname timing_file
     run_dir="$(spec_run_dir "$spec")"
     output_dir="${run_dir}/seed_${seed}/generated_images_${method}"
     output_dirname="dcs_transfer_runs/${RUN_ID}/seed_${seed}/generated_images_${method}"
-    if [[ -e "$output_dir" ]]; then
-        require_completed_dataset "$output_dir"
-        echo "==> Reusing ${spec}/${method}, generation seed ${seed}"
-        return
+    timing_file="${run_dir}/seed_${seed}/timings/${method}.json"
+    if [[ -e "$output_dir" || -L "$output_dir" ]]; then
+        if require_completed_dataset "$output_dir"; then
+            echo "==> Reusing ${spec}/${method}, generation seed ${seed}"
+            return
+        fi
+        if [[ "$ARCHIVE_INCOMPLETE_GENERATION" != "true" ]]; then
+            echo "Incomplete generated dataset exists: ${output_dir}" >&2
+            echo "Resume with ARCHIVE_INCOMPLETE_GENERATION=true to archive and restart it." >&2
+            exit 1
+        fi
+        local archive_dir archive_stamp
+        archive_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+        archive_dir="${run_dir}/incomplete_generation_archives/seed_${seed}/${method}/${archive_stamp}"
+        if [[ -e "$archive_dir" ]]; then
+            echo "Incomplete-generation archive already exists: ${archive_dir}" >&2
+            exit 1
+        fi
+        mkdir -p "$archive_dir"
+        mv -- "$output_dir" "${archive_dir}/generated_images_${method}"
+        if [[ -f "$timing_file" ]]; then
+            mv -- "$timing_file" "${archive_dir}/timing.json"
+        fi
+        echo "==> Archived incomplete generation to ${archive_dir}"
     fi
     if [[ "$RUN_GENERATION" != "true" ]]; then
         echo "Missing generated dataset: ${output_dir}" >&2
@@ -270,7 +291,7 @@ generate_variant() {
         --guideTPercent "$GTP" --CoDA_guidance_scale "$GAMMA" \
         --seed "$seed" --generate_images \
         --experiment_method "$method" --generated_images_dirname "$output_dirname" \
-        --timing_file "${run_dir}/seed_${seed}/timings/${method}.json" \
+        --timing_file "$timing_file" \
         "${method_args[@]}"
 }
 

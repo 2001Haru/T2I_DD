@@ -620,6 +620,11 @@ size, so a partially completed two-GPU caption run can resume on one GPU without
 discarding either rank shard. Set `DCS_CAPTION_GPU_COUNT=2` and
 `DCS_CAPTION_VISIBLE_DEVICES=0,1` only when the host has enough RAM.
 
+In resume mode, an incomplete synthetic-image directory is moved under that
+run's `incomplete_generation_archives/` before the affected generation seed is
+restarted. Completed generation seeds are reused. Set
+`ARCHIVE_INCOMPLETE_GENERATION=false` to retain strict stop-on-partial behavior.
+
 Set `RUN_DCS_CAPTIONING=false` after caption caches are complete to rebuild only
 the DCS selection manifest. The defaults match VLCP ImageNet parameters:
 `DCS_THRESHOLD=0.7`, `DCS_TOP_K=30`, and no extra caption word truncation.
