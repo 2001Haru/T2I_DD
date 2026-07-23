@@ -60,7 +60,7 @@ gdown --folder \
 Place them as follows (the extracted archive may add one extra parent folder):
 
 ```text
-/linxi/dataset/ImageNette_VLCP/
+/linxi/dataset/VLCP/ImageNette/
   train/
     metadata.jsonl
     n01440764/
@@ -129,13 +129,25 @@ python -m pip install \
 python -m nltk.downloader punkt_tab stopwords
 ```
 
+If the author's modified Diffusers source is already at
+`/linxi/packages/VLCP/diffusers`, it may instead be installed in editable mode:
+
+```bash
+python -m pip install -e /linxi/packages/VLCP/diffusers
+python -c "import diffusers; print(diffusers.__version__, diffusers.__file__)"
+```
+
+The printed file must point inside `/linxi/packages/VLCP/diffusers`. The
+ablation itself uses standard Diffusers APIs, so the modified package is
+compatible but not required.
+
 ## 4. Validate paths before GPU work
 
 ```bash
 cd /linxi/T2I_DD/Dataset-Distillation-via-Vision-Language-Category-Prototype
 
 python experiments/prior_alignment_ablation/validate_setup.py \
-  --data-root /linxi/dataset/ImageNette_VLCP \
+  --data-root /linxi/dataset/VLCP/ImageNette \
   --base-model /linxi/models/VLCP/stable-diffusion-v1-5 \
   --finetuned-model /linxi/models/VLCP/ImageNette_seed0
 ```
@@ -147,7 +159,7 @@ lines report `[OK]`.
 ## 5. Run the low-cost pilot
 
 ```bash
-export DATA_ROOT=/linxi/dataset/ImageNette_VLCP
+export DATA_ROOT=/linxi/dataset/VLCP/ImageNette
 export BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5
 export FINETUNED_MODEL=/linxi/models/VLCP/ImageNette_seed0
 export RUN_ID=author_checkpoint_pilot_v0
