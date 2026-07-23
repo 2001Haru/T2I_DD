@@ -42,6 +42,8 @@ LABEL_FILE="$DISTILLATION_DIR/label-prompt/class_nette.txt"
 
 mkdir -p "$RUN_ROOT" "$PROTOTYPE_DIR" "$EVALUATION_ROOT"
 
+python "$EXPERIMENT_DIR/check_dependencies.py"
+
 if [[ -z "${CAPTION_FILE:-}" ]]; then
   for candidate in \
     "$DATA_ROOT/train/metadata.jsonl" \

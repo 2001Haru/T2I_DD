@@ -5,31 +5,22 @@ Date: 2023.9.21
 '''
 
 from diffusers import AutoencoderKL
-from sklearn.metrics import davies_bouldin_score
 from sklearn.neighbors import LocalOutlierFactor
 import torch
-import torchvision  
-from torchvision import transforms
-from torch.utils.data import DataLoader
 import random
 import argparse
 import json
 import numpy as np
 import math
 import os
-from sklearn.cluster import MiniBatchKMeans
 from tqdm import tqdm
 from classes import IMAGENET2012_CLASSES
 from dataset_utils import *
 from collections import Counter
 from sklearn.cluster import KMeans  # 修改导入
 
-from sklearn.feature_extraction.text import TfidfVectorizer
-import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
-nltk.download('punkt_tab')
-nltk.download('stopwords')
 from collections import defaultdict
 def parse_args():
     parser = argparse.ArgumentParser()

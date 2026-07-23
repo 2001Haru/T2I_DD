@@ -115,18 +115,16 @@ The experiment does not use VLCP's copied custom Diffusers package. It uses the
 standard `AutoencoderKL` and `StableDiffusionImg2ImgPipeline`, which implement
 the same scaled VAE encoding and img2img-from-latent operations used here.
 
-Inside the existing CUDA/PyTorch environment install missing packages without
-reinstalling PyTorch:
+Inside the existing CUDA/PyTorch environment install all pilot dependencies
+without reinstalling PyTorch or torchvision:
 
 ```bash
-python -m pip install \
-  "diffusers>=0.30,<0.39" \
-  "transformers>=4.40,<5" \
-  "accelerate>=0.30" \
-  safetensors huggingface_hub \
-  scikit-learn scipy nltk matplotlib
+python -m pip install -r \
+  experiments/prior_alignment_ablation/requirements-pilot.txt
 
 python -m nltk.downloader punkt_tab stopwords
+
+python experiments/prior_alignment_ablation/check_dependencies.py
 ```
 
 If the author's modified Diffusers source is already at

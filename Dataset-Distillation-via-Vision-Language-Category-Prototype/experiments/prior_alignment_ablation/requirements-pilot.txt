@@ -1,0 +1,13 @@
+# Install torch and torchvision separately so they match the cloud CUDA image.
+diffusers>=0.30,<0.39
+transformers>=4.40,<5
+accelerate>=0.30
+safetensors
+huggingface_hub
+numpy<2
+scipy
+scikit-learn>=1.2
+nltk
+tqdm
+matplotlib
+Pillow
