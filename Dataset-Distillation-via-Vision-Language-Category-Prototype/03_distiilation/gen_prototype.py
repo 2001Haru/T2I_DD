@@ -4,7 +4,7 @@ Author: Su Duo & Houjunjie
 Date: 2023.9.21
 '''
 
-from diffusers import StableDiffusionGenLatentsPipeline
+from diffusers import AutoencoderKL
 from sklearn.metrics import davies_bouldin_score
 from sklearn.neighbors import LocalOutlierFactor
 import torch
@@ -32,14 +32,6 @@ from nltk.tokenize import word_tokenize
 nltk.download('punkt_tab')
 nltk.download('stopwords')
 from collections import defaultdict
-from transformers import GPT2Tokenizer, GPT2LMHeadModel
-import torch
-
-
-tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-model_gpt2 = GPT2LMHeadModel.from_pretrained("gpt2")
-
-
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', default=10, type=int, 
@@ -68,6 +60,8 @@ def parse_args():
                         help='number of workers')
     parser.add_argument('--save_prototype_path', default='/home-ext/tbw/suduo/D3M/prototypes', type=str, 
                         help='where to save the generated prototype json files')
+    parser.add_argument('--save_text_prototype_path', default=None, type=str,
+                        help='exact output path for the selected DCS text prototypes')
     parser.add_argument('--seed', default=0, type=int, 
                         help='seed')              
     parser.add_argument('--size', default=512, type=int, 
@@ -87,7 +81,7 @@ def initialize_km_models(label_list, args):
         km_models[model_name] = model
     return km_models
 
-def prototype_kmeans(pipe, data_loader, label_list, km_models, path_all, args):
+def prototype_kmeans(vae, data_loader, label_list, km_models, path_all, args):
     latents = {label: [] for label in label_list}  # 存储每个 label 对应的潜在表示
     prompt_to_paths = {label: [] for label in label_list}  # 存储每个 prompt 对应的路径
 
@@ -114,7 +108,11 @@ def prototype_kmeans(pipe, data_loader, label_list, km_models, path_all, args):
             prompt_to_paths[prompt].append(batch_paths[idx])
 
         # 获取初始的 latent 表示
-        init_latents, _ = pipe(prompt=prompts, image=images, strength=0.7, guidance_scale=8)
+        # The VLCP custom pipeline only performs scaled VAE encoding here.
+        vae_images = images.to(dtype=vae.dtype) * 2.0 - 1.0
+        with torch.no_grad():
+            init_latents = vae.encode(vae_images).latent_dist.sample()
+            init_latents = vae.config.scaling_factor * init_latents
 
         for latent, prompt in zip(init_latents, prompts):
             latent = latent.view(1, -1).cpu().numpy()
@@ -211,12 +209,16 @@ def gen_prototype(label_list, km_models,prompt_to_paths,args):
         class_path = prompt_to_paths.pop(prompt,None)
         for idx, label in enumerate(labels):
             sample = class_path[idx]
-            new_paths = sample.split('train/', 1)[1]
+            new_paths = os.path.relpath(sample, os.path.join(args.data_dir, 'train')).replace(os.sep, '/')
+            if new_paths == '..' or new_paths.startswith('../'):
+                raise ValueError(f'Image path is outside the training root: {sample}')
             if 'woof' in args.label_file_path: 
                 new_paths = sample.split('/')[-1]  
             # new_paths = sample.split('/')[-1] 
             # print(f'{data_dict}--{new_paths}') # 假设你的样本数据保存在 data 变量中
             text_desc = data_dict.pop(new_paths, None)
+            if text_desc is None:
+                raise KeyError(f'Missing caption metadata for {new_paths}')
             samples_per_cluster[label].append(text_desc)
         text_list = []
         word_in_sentence_count_cluster = defaultdict(int)
@@ -257,8 +259,12 @@ def gen_prototype(label_list, km_models,prompt_to_paths,args):
             print("\nfiltered_words:\n", high_freq_words_tmp,len(descriptions))
             print("\nGenerated Text:\n", max_sentence)
         adict[prompt]=text_list
-    os.system(f'mkdir -p {args.spec}_text')
-    json_file = f'{args.spec}_text/text_{args.ipc}_{args.threshold}_{args.tpk}.json'
+    if args.save_text_prototype_path:
+        json_file = args.save_text_prototype_path
+        os.makedirs(os.path.dirname(os.path.abspath(json_file)), exist_ok=True)
+    else:
+        os.makedirs(f'{args.spec}_text', exist_ok=True)
+        json_file = f'{args.spec}_text/text_{args.ipc}_{args.threshold}_{args.tpk}.json'
     with open(json_file, 'w') as f:
         json.dump(adict, f)
     print(f"Text json file saved ")
@@ -301,12 +307,16 @@ def main():
     trainloader, _, path_all = load_dataset(args)
 
     # 3.define the diffusers pipeline
-    pipe = StableDiffusionGenLatentsPipeline.from_pretrained(args.diffusion_checkpoints_path, torch_dtype=torch.float16)
-    pipe = pipe.to(args.device)
+    vae = AutoencoderKL.from_pretrained(
+        args.diffusion_checkpoints_path,
+        subfolder="vae",
+        torch_dtype=torch.float16,
+    ).to(args.device)
+    vae.eval()
 
     # 4.initialize & run partial k-means model each class
     km_models = initialize_km_models(label_list, args)
-    fitted_km,prompt_to_paths = prototype_kmeans(pipe=pipe, data_loader=trainloader, label_list=label_list, km_models=km_models,path_all=path_all,args=args)
+    fitted_km,prompt_to_paths = prototype_kmeans(vae=vae, data_loader=trainloader, label_list=label_list, km_models=km_models,path_all=path_all,args=args)
     
     # 5.generate prototypes and save them as json file
     prototype = gen_prototype(label_list, fitted_km,prompt_to_paths,args)
