@@ -96,29 +96,35 @@ def load_feature_records(args):
     return selected, records
 
 
-def _caption_config(args, world_size):
+def _caption_config(args):
     return {
         "format_version": 1,
         "spec": args.spec,
         "model": os.path.abspath(args.model),
         "instruction_template": args.instruction,
         "max_new_tokens": args.max_new_tokens,
-        "world_size": world_size,
     }
 
 
-def _read_jsonl(path):
+def _read_jsonl(path, allow_incomplete_final=False):
     rows = []
     if not os.path.isfile(path):
         return rows
     with open(path, "r", encoding="utf-8") as file:
-        for line_number, line in enumerate(file, start=1):
+        lines = file.readlines()
+        last_nonempty = max(
+            (index for index, line in enumerate(lines, start=1) if line.strip()),
+            default=0,
+        )
+        for line_number, line in enumerate(lines, start=1):
             line = line.strip()
             if not line:
                 continue
             try:
                 rows.append(json.loads(line))
             except json.JSONDecodeError as error:
+                if allow_incomplete_final and line_number == last_nonempty:
+                    break
                 raise ValueError(f"Invalid JSONL at {path}:{line_number}") from error
     return rows
 
@@ -152,6 +158,9 @@ def _validate_or_write_rank_config(path, expected):
     if os.path.isfile(path):
         with open(path, "r", encoding="utf-8") as file:
             actual = json.load(file)
+        # Caption shards are independent of launch parallelism. Older caches
+        # recorded world_size; ignore it so a two-GPU run can resume on one GPU.
+        actual.pop("world_size", None)
         if actual != expected:
             raise ValueError(
                 f"Caption cache configuration changed at {path}. "
@@ -168,13 +177,18 @@ def caption_images(args):
     os.makedirs(args.caption_cache_dir, exist_ok=True)
 
     rank_stem = os.path.join(args.caption_cache_dir, f"captions.rank{rank}")
-    config = _caption_config(args, world_size)
+    config = _caption_config(args)
     _validate_or_write_rank_config(f"{rank_stem}.meta.json", config)
     output_path = f"{rank_stem}.jsonl"
     _repair_trailing_jsonl(output_path)
+    all_completed_rows = []
+    for shard_path in glob.glob(os.path.join(args.caption_cache_dir, "captions.rank*.jsonl")):
+        all_completed_rows.extend(
+            _read_jsonl(shard_path, allow_incomplete_final=True)
+        )
     completed = {
         row["image_path"]
-        for row in _read_jsonl(output_path)
+        for row in all_completed_rows
         if isinstance(row.get("caption"), str) and row["caption"].strip()
     }
 

@@ -23,6 +23,8 @@ DCS_THRESHOLD="${DCS_THRESHOLD:-0.7}"
 DCS_TOP_K="${DCS_TOP_K:-30}"
 DCS_MAX_NEW_TOKENS="${DCS_MAX_NEW_TOKENS:-128}"
 DCS_MAX_CAPTION_WORDS="${DCS_MAX_CAPTION_WORDS:-0}"
+DCS_CAPTION_GPU_COUNT="${DCS_CAPTION_GPU_COUNT:-1}"
+DCS_CAPTION_VISIBLE_DEVICES="${DCS_CAPTION_VISIBLE_DEVICES:-0}"
 DCS_PROMPT_TEMPLATE="${DCS_PROMPT_TEMPLATE:-An natural photo of a {class_name}, {caption}, centered object.}"
 DCS_INSTRUCTION="${DCS_INSTRUCTION:-Describe the physical appearance of the {class_name} in the image. Include details about its shape, posture, color, and any distinct features.}"
 RUN_ID="${DCS_TRANSFER_RUN_ID:-dcs_transfer_$(date -u +%Y%m%dT%H%M%SZ)}"
@@ -100,6 +102,10 @@ if [[ "$VISIBLE_GPU_COUNT" != "2" ]]; then
     echo "This protocol requires exactly two visible GPUs; found ${VISIBLE_GPU_COUNT}." >&2
     exit 1
 fi
+if [[ "$DCS_CAPTION_GPU_COUNT" -lt 1 || "$DCS_CAPTION_GPU_COUNT" -gt "$VISIBLE_GPU_COUNT" ]]; then
+    echo "DCS_CAPTION_GPU_COUNT must be between 1 and ${VISIBLE_GPU_COUNT}." >&2
+    exit 1
+fi
 python -c 'from nltk.corpus import stopwords; stopwords.words("english")' >/dev/null
 
 CONFIG_FILE="${META_ROOT}/run_config.txt"
@@ -168,13 +174,23 @@ build_dcs_file() {
         return
     fi
     if [[ "$RUN_DCS_CAPTIONING" == "true" ]]; then
-        echo "==> Captioning ${spec} real images on ${VISIBLE_GPU_COUNT} GPU(s)" >&2
-        torchrun --standalone --nproc_per_node="$VISIBLE_GPU_COUNT" dcs_caption.py caption \
-            --spec "$spec" --misc-dir ./misc \
-            --features-cache-path "./results/clusterfile/${spec}/original_features_cache.pkl" \
-            --caption-cache-dir "$cache_dir" \
-            --model "$VLM_MODEL" --instruction "$DCS_INSTRUCTION" \
-            --max-new-tokens "$DCS_MAX_NEW_TOKENS" 1>&2
+        echo "==> Captioning ${spec} real images on ${DCS_CAPTION_GPU_COUNT} GPU(s)" >&2
+        local caption_args=(
+            dcs_caption.py caption
+            --spec "$spec" --misc-dir ./misc
+            --features-cache-path "./results/clusterfile/${spec}/original_features_cache.pkl"
+            --caption-cache-dir "$cache_dir"
+            --model "$VLM_MODEL" --instruction "$DCS_INSTRUCTION"
+            --max-new-tokens "$DCS_MAX_NEW_TOKENS"
+        )
+        if [[ "$DCS_CAPTION_GPU_COUNT" == "1" ]]; then
+            CUDA_VISIBLE_DEVICES="$DCS_CAPTION_VISIBLE_DEVICES" \
+                python "${caption_args[@]}" 1>&2
+        else
+            CUDA_VISIBLE_DEVICES="$DCS_CAPTION_VISIBLE_DEVICES" \
+                torchrun --standalone --nproc_per_node="$DCS_CAPTION_GPU_COUNT" \
+                "${caption_args[@]}" 1>&2
+        fi
     fi
     echo "==> Building ${spec} VLCP-style DCS captions" >&2
     python dcs_caption.py build \

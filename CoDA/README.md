@@ -613,6 +613,13 @@ export RESUME_RUN=true
 bash scripts/dcs_transfer_experiment.sh
 ```
 
+The caption stage defaults to one GPU to avoid the host-RAM spike caused by
+loading two LLaVA-7B replicas simultaneously. SDXL generation and classifier
+evaluation still use both visible GPUs. Caption caches are independent of world
+size, so a partially completed two-GPU caption run can resume on one GPU without
+discarding either rank shard. Set `DCS_CAPTION_GPU_COUNT=2` and
+`DCS_CAPTION_VISIBLE_DEVICES=0,1` only when the host has enough RAM.
+
 Set `RUN_DCS_CAPTIONING=false` after caption caches are complete to rebuild only
 the DCS selection manifest. The defaults match VLCP ImageNet parameters:
 `DCS_THRESHOLD=0.7`, `DCS_TOP_K=30`, and no extra caption word truncation.

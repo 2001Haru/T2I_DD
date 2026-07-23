@@ -2,6 +2,7 @@ import os
 import sys
 import tempfile
 import unittest
+import json
 
 import numpy as np
 
@@ -11,6 +12,7 @@ from dcs_caption import (
     _flat_features,
     _read_jsonl,
     _repair_trailing_jsonl,
+    _validate_or_write_rank_config,
     select_dcs_captions,
     tokenize,
 )
@@ -73,6 +75,20 @@ class DcsCaptionTest(unittest.TestCase):
         flattened = _flat_features(features)
         self.assertEqual(flattened.shape, (2, 8))
         np.testing.assert_array_equal(flattened[0], np.arange(8, dtype=np.float32))
+
+    def test_old_world_size_does_not_block_single_gpu_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "captions.rank0.meta.json")
+            expected = {
+                "format_version": 1,
+                "spec": "imageA",
+                "model": "/models/llava",
+                "instruction_template": "describe",
+                "max_new_tokens": 128,
+            }
+            with open(path, "w", encoding="utf-8") as file:
+                json.dump({**expected, "world_size": 2}, file)
+            _validate_or_write_rank_config(path, expected)
 
 
 if __name__ == "__main__":
