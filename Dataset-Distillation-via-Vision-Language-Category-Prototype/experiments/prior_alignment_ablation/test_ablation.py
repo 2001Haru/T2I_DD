@@ -6,6 +6,7 @@ from pathlib import Path
 from common import condition_matrix, ensure_manifest, stable_image_seed
 from prepare_imagenette import materialize
 from summarize_results import parse_log
+from validate_setup import find_caption_file
 
 
 class CommonTests(unittest.TestCase):
@@ -38,6 +39,14 @@ class PreparationTests(unittest.TestCase):
             source.write_text("image", encoding="utf-8")
             self.assertTrue(materialize(source, destination, "hardlink"))
             self.assertFalse(materialize(source, destination, "hardlink"))
+
+    def test_author_nette_caption_file_is_discovered(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            caption = root / "train" / "nette.jsonl"
+            caption.parent.mkdir(parents=True)
+            caption.write_text('{"file_name":"x.jpg","text":"caption"}\n', encoding="utf-8")
+            self.assertEqual(find_caption_file(root), caption.resolve())
 
 
 class SummaryTests(unittest.TestCase):

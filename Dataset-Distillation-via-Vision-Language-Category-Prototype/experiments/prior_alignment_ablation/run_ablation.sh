@@ -42,15 +42,29 @@ LABEL_FILE="$DISTILLATION_DIR/label-prompt/class_nette.txt"
 
 mkdir -p "$RUN_ROOT" "$PROTOTYPE_DIR" "$EVALUATION_ROOT"
 
+if [[ -z "${CAPTION_FILE:-}" ]]; then
+  for candidate in \
+    "$DATA_ROOT/train/metadata.jsonl" \
+    "$DATA_ROOT/train/nette.jsonl" \
+    "$DATA_ROOT/nette.jsonl"; do
+    if [[ -f "$candidate" ]]; then
+      CAPTION_FILE="$candidate"
+      break
+    fi
+  done
+fi
+
+if [[ -z "${CAPTION_FILE:-}" ]]; then
+  echo "No caption JSONL found under $DATA_ROOT; set CAPTION_FILE explicitly." >&2
+  exit 1
+fi
+echo "==> Caption metadata: $CAPTION_FILE"
+
 python "$EXPERIMENT_DIR/validate_setup.py" \
   --data-root "$DATA_ROOT" \
   --base-model "$BASE_MODEL" \
-  --finetuned-model "$FINETUNED_MODEL"
-
-if [[ ! -f "$DATA_ROOT/train/metadata.jsonl" ]]; then
-  echo "Missing $DATA_ROOT/train/metadata.jsonl; run prepare_imagenette.py and merge_llava_answers.py first." >&2
-  exit 1
-fi
+  --finetuned-model "$FINETUNED_MODEL" \
+  --caption-file "$CAPTION_FILE"
 
 if [[ "$BUILD_PROTOTYPES" == "true" && ! -f "$PROTOTYPE_PATH" ]]; then
   (
@@ -68,7 +82,7 @@ if [[ "$BUILD_PROTOTYPES" == "true" && ! -f "$PROTOTYPE_PATH" ]]; then
       --save_prototype_path "$PROTOTYPE_DIR" \
       --save_text_prototype_path "$DCS_PATH" \
       --seed 0 \
-      --metajson_file "$DATA_ROOT/train/metadata.jsonl" \
+      --metajson_file "$CAPTION_FILE" \
       --threshold 0.7 \
       --tpk 30
   )

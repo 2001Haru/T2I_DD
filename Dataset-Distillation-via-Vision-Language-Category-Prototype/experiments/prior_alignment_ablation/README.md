@@ -39,7 +39,7 @@ The author release is linked from the project README:
 Download only these two items instead of the complete release:
 
 1. The original **ImageNette dataset with text metadata**. It must contain
-   `train/`, `val/`, and `train/metadata.jsonl`.
+   `train/`, `val/`, and either `train/nette.jsonl` or `train/metadata.jsonl`.
 2. The fine-tuned model **ImageNette_seed0**. It must be a complete Diffusers
    pipeline containing `model_index.json`, `unet/`, `vae/`, `text_encoder/`,
    `tokenizer/`, and `scheduler/`.
@@ -62,7 +62,7 @@ Place them as follows (the extracted archive may add one extra parent folder):
 ```text
 /linxi/dataset/VLCP/ImageNette/
   train/
-    metadata.jsonl
+    nette.jsonl
     n01440764/
     ...
   val/
@@ -155,6 +155,10 @@ python experiments/prior_alignment_ablation/validate_setup.py \
 The validator checks all ten synsets, image-caption coverage, validation data,
 and the required Diffusers components. Do not start generation until all three
 lines report `[OK]`.
+
+The run script automatically recognizes `train/nette.jsonl`; no rename or copy
+to `metadata.jsonl` is needed. For a nonstandard location, set
+`CAPTION_FILE=/absolute/path/to/file.jsonl`.
 
 ## 5. Run the low-cost pilot
 

@@ -21,6 +21,7 @@ def parse_args():
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--base-model", required=True)
     parser.add_argument("--finetuned-model", required=True)
+    parser.add_argument("--caption-file", default=None)
     return parser.parse_args()
 
 
@@ -45,16 +46,27 @@ def validate_model(reference, label, require_local):
     print(f"[OK] {label}: {root.resolve()}")
 
 
-def validate_data(data_root):
+def find_caption_file(data_root, explicit=None):
+    candidates = [
+        Path(explicit) if explicit else None,
+        data_root / "train" / "metadata.jsonl",
+        data_root / "train" / "nette.jsonl",
+        data_root / "nette.jsonl",
+    ]
+    for candidate in candidates:
+        if candidate is not None and candidate.is_file():
+            return candidate.resolve()
+    searched = [str(path) for path in candidates if path is not None]
+    raise FileNotFoundError(f"No caption JSONL found. Searched: {searched}")
+
+
+def validate_data(data_root, caption_file=None):
     train_root = data_root / "train"
     val_root = data_root / "val"
-    metadata_path = train_root / "metadata.jsonl"
+    metadata_path = find_caption_file(data_root, caption_file)
     for path in (train_root, val_root):
         if not path.is_dir():
             raise FileNotFoundError(path)
-    if not metadata_path.is_file():
-        raise FileNotFoundError(metadata_path)
-
     for split_root in (train_root, val_root):
         actual = {path.name for path in split_root.iterdir() if path.is_dir()}
         missing = set(IMAGENETTE_SYNSETS) - actual
@@ -80,13 +92,13 @@ def validate_data(data_root):
         )
     print(
         f"[OK] ImageNette: {len(train_images)} train images, "
-        f"{len(image_paths(val_root))} validation images, complete captions"
+        f"{len(image_paths(val_root))} validation images, complete captions at {metadata_path}"
     )
 
 
 def main():
     args = parse_args()
-    validate_data(Path(args.data_root).resolve())
+    validate_data(Path(args.data_root).resolve(), args.caption_file)
     validate_model(args.base_model, "frozen model", require_local=False)
     validate_model(args.finetuned_model, "author fine-tuned model", require_local=True)
 
