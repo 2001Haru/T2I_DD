@@ -124,7 +124,7 @@ python -m pip install \
   "transformers>=4.40,<5" \
   "accelerate>=0.30" \
   safetensors huggingface_hub \
-  scikit-learn scipy nltk matplotlib ipdb
+  scikit-learn scipy nltk matplotlib
 
 python -m nltk.downloader punkt_tab stopwords
 ```
