@@ -561,3 +561,58 @@ The final report is written to
 classifier-seed-paired differences for Montage versus baseline, Soft Projection
 versus Montage, and Kappa Cap versus Montage, both per generation seed and per
 subset. ImageC is labeled as held out in the JSON summary and plots.
+
+## VLCP DCS transfer to CoDA
+
+The DCS transfer keeps CoDA clustering, SDXL image guidance, and classifier
+evaluation unchanged. It changes only the text condition:
+
+1. LLaVA captions every real training image in ImageA/B/C once.
+2. Each image is assigned to its nearest saved CoDA representative in the
+   original SDXL VAE feature space.
+3. Following VLCP, words present in at least `0.7` of all class captions are
+   removed, the remaining words are counted per cluster, and the existing
+   cluster caption with maximum weighted coverage of the top 30 words is used.
+4. SDXL receives
+   `An natural photo of a {class_name}, {caption}, centered object.`
+
+The nearest-center assignment is necessary because historical CoDA artifacts
+store final representatives but not the post-processed HDBSCAN memberships.
+The DCS manifest records this choice and all selected source paths.
+
+Install the one additional text dependency and its corpus:
+
+```bash
+pip install nltk==3.9.1
+python -m nltk.downloader stopwords
+```
+
+Run ImageA/B/C with generation seeds 0 and 1:
+
+```bash
+export DCS_TRANSFER_RUN_ID=dcs_transfer_v0
+bash scripts/dcs_transfer_experiment.sh
+```
+
+By default only the new `dcs` arm is generated and trained, because matching
+CoDA baselines already exist from earlier experiments. To regenerate paired
+baselines inside the same run, set:
+
+```bash
+export METHODS="coda_baseline dcs"
+```
+
+Caption shards are appended under
+`results/dcs_caption_cache/<spec>/vlcp_dcs_class_aware/`, so interruption during
+the expensive LLaVA pass is resumable. Generation and classifier artifacts are
+isolated under `dcs_transfer_runs/<RUN_ID>/`. Resume the same run with:
+
+```bash
+export DCS_TRANSFER_RUN_ID=dcs_transfer_v0
+export RESUME_RUN=true
+bash scripts/dcs_transfer_experiment.sh
+```
+
+Set `RUN_DCS_CAPTIONING=false` after caption caches are complete to rebuild only
+the DCS selection manifest. The defaults match VLCP ImageNet parameters:
+`DCS_THRESHOLD=0.7`, `DCS_TOP_K=30`, and no extra caption word truncation.
