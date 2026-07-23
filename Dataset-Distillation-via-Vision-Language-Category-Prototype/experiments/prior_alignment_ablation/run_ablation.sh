@@ -42,6 +42,16 @@ LABEL_FILE="$DISTILLATION_DIR/label-prompt/class_nette.txt"
 
 mkdir -p "$RUN_ROOT" "$PROTOTYPE_DIR" "$EVALUATION_ROOT"
 
+RESUME_ENV="$RUN_ROOT/resume.env"
+{
+  printf 'export DATA_ROOT=%q\n' "$DATA_ROOT"
+  printf 'export BASE_MODEL=%q\n' "$BASE_MODEL"
+  printf 'export FINETUNED_MODEL=%q\n' "$FINETUNED_MODEL"
+  printf 'export RUN_ID=%q\n' "$RUN_ID"
+  printf 'export RUN_ROOT=%q\n' "$RUN_ROOT"
+} > "$RESUME_ENV.tmp"
+mv "$RESUME_ENV.tmp" "$RESUME_ENV"
+
 python "$EXPERIMENT_DIR/check_dependencies.py"
 
 if [[ -z "${CAPTION_FILE:-}" ]]; then
@@ -164,8 +174,15 @@ if [[ "$EVALUATE" == "true" ]]; then
         continue
       fi
       if [[ -s "$log_path" ]]; then
-        echo "Incomplete evaluation log exists; refusing to append: $log_path" >&2
-        exit 1
+        if [[ "$RESUME" == "true" ]]; then
+          interrupted_log="$log_path.interrupted_$(date -u +%Y%m%dT%H%M%SZ)"
+          mv "$log_path" "$interrupted_log"
+          echo "==> Archived interrupted evaluation log: $interrupted_log"
+        else
+          echo "Incomplete evaluation log exists; refusing to append: $log_path" >&2
+          echo "Rerun with RESUME=true to archive it and restart this condition." >&2
+          exit 1
+        fi
       fi
       echo "==> Evaluating seed=$generation_seed condition=$condition"
       (

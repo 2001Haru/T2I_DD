@@ -189,15 +189,18 @@ prototype variation without removing the intended UNet fine-tuning effect.
 Resume a matching interrupted run with:
 
 ```bash
+source /linxi/T2I_DD/vlcp_ablation_runs/author_checkpoint_pilot_v0/resume.env
+
 FINETUNE=false \
 GENERATION_SEEDS=0 \
 RESUME=true \
 bash experiments/prior_alignment_ablation/run_ablation.sh
 ```
 
-The same exported paths and `RUN_ID` must still be present. Matching manifests
-are reused; incompatible generation settings and incomplete classifier logs are
-rejected instead of appended.
+Each run writes `$RUN_ROOT/resume.env`, so a new SSH shell can restore all paths
+with `source`. Matching manifests and completed evaluations are reused. With
+`RESUME=true`, an incomplete classifier log is renamed with an `.interrupted_*`
+suffix and that condition restarts cleanly instead of appending to partial data.
 
 If seed 0 gives a meaningful positive interaction, add a second generation
 seed in the same run:
