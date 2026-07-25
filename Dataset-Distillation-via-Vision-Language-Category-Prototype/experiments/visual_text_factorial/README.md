@@ -104,3 +104,15 @@ Outputs are isolated under:
 Every synthetic condition stores a manifest containing model and artifact
 identities, exact prompts, prompt-source cluster indices, initialization
 definition, and image seeds. Resume refuses configuration mismatches.
+
+Audit a completed run before interpreting an unexpected result:
+
+```bash
+python experiments/visual_text_factorial/audit_run.py \
+  --run-root /linxi/T2I_DD/vlcp_factorial_runs/visual_text_factorial_v0
+```
+
+The audit verifies all six manifests, paired image seeds, correct and shuffled
+prompt-source indices, DCS text hashes, image counts, completed classifier
+logs, and the synthetic directory reported by each evaluation log. It writes
+`audit.json` in the run root.
