@@ -639,7 +639,7 @@ export DCS_TRANSFER_RUN_ID=dcs_transfer_imageA_m50_v0
 bash scripts/dcs_transfer_experiment.sh
 ```
 
-This caps ImageA at 500 captions instead of roughly 13,000. It is a
+This caps ImageA at 5000 captions instead of roughly 13,000. It is a
 cluster-balanced approximation to VLCP DCS rather than the full-data method.
 The manifest records original and sampled cluster sizes. `0` restores the full
 method. `DCS_CAPTION_BATCH_SIZE=2` can improve throughput on GPUs with spare
