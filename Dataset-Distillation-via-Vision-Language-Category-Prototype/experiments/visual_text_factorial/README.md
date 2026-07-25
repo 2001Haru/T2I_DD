@@ -153,3 +153,64 @@ the best one. Outputs are written to:
   shuffle_comparisons.csv
   shuffle_summary.json
 ```
+
+## Semantic coverage diagnostics
+
+This follow-up tests whether within-class DCS shuffling expands the real data
+manifold covered by the synthetic set. It reuses every generated image and
+does not run diffusion or classifier training.
+
+Two independent representations are used:
+
+1. The frozen SD 1.5 CLIP text encoder measures how much the actual
+   generation-time conditioning changes. Encoding mirrors the generator's
+   untruncated 77-token chunking.
+2. A separately downloaded DINOv2 model measures class-conditional image
+   coverage and fidelity against the real ImageNette training split.
+
+For each class and synthetic condition, the image diagnostic reports:
+
+```text
+coverage distance = mean real-image distance to its nearest synthetic image
+fidelity distance = mean synthetic-image distance to its nearest real image
+coverage@R = fraction of real images within the class-specific real-NN radius
+precision@R = fraction of synthetic images within that radius
+diversity = mean pairwise distance among synthetic images
+```
+
+Lower continuous coverage/fidelity distances are better. The radius `R` is
+the 95th percentile of each real image's nearest-other-real DINOv2 distance.
+
+Run with the existing base and shift `{1,2,4,7}` artifacts:
+
+```bash
+cd /linxi/T2I_DD/Dataset-Distillation-via-Vision-Language-Category-Prototype
+
+CUDA_VISIBLE_DEVICES=0 \
+DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
+BASE_RUN_ROOT=/linxi/T2I_DD/vlcp_factorial_runs/visual_text_factorial_v0 \
+RANDOMIZATION_ROOT=/linxi/T2I_DD/vlcp_shuffle_runs/visual_text_shuffle_randomization_v0 \
+BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
+DINO_MODEL=/models/DINOv2/dinov2-base \
+DIAGNOSTICS_ID=semantic_coverage_v0 \
+bash experiments/visual_text_factorial/run_semantic_coverage_diagnostics.sh
+```
+
+Resume interrupted feature extraction with the same command plus
+`RESUME=true`. Cached features are reused only when the model and complete
+image inventory match. Main outputs are:
+
+```text
+diagnostics/<DIAGNOSTICS_ID>/
+  text/conditioning_pairs.csv
+  text/conditioning_shift_summary.csv
+  text/conditioning_class_summary.csv
+  dino/dino_metrics_per_class.csv
+  dino/dino_metrics_summary.csv
+  dino/dino_shuffled_minus_correct.csv
+  dino/dino_shuffled_minus_correct_per_class.csv
+  summary/conditioning_and_coverage.csv
+  summary/conditioning_and_coverage_per_class.csv
+  summary/semantic_coverage_diagnostic.png
+  summary/semantic_coverage_summary.json
+```

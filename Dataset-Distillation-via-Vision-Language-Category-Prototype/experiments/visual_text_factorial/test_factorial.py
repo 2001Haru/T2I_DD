@@ -3,12 +3,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+import torch
+
 from common import (
     condition_matrix,
     ensure_manifest,
     shuffled_prompt_index,
     stable_image_seed,
 )
+from diagnose_dino_coverage import class_metrics, condition_metadata
+from diagnose_text_conditioning import pair_metrics
 from summarize_results import condition_contrasts, parse_log
 from summarize_shuffle_randomization import parse_shift_runs, rank_descending
 
@@ -75,6 +80,45 @@ class SummaryTests(unittest.TestCase):
         runs = parse_shift_runs(["2=/tmp/shift2", "7=/tmp/shift7"])
         self.assertEqual(sorted(runs), [2, 7])
         self.assertEqual(rank_descending(57.0, [57.0, 59.0, 56.0, 55.0]), 2)
+
+
+class DiagnosticTests(unittest.TestCase):
+    def test_condition_metadata_preserves_no_visual_prefix(self):
+        self.assertEqual(
+            condition_metadata("no_visual_dcs_shuffled", 4),
+            ("no_visual", "shuffled_dcs", 4),
+        )
+        self.assertEqual(
+            condition_metadata("prototype_dcs", 1),
+            ("prototype", "correct_dcs", 0),
+        )
+
+    def test_identical_conditioning_has_zero_displacement(self):
+        encoding = {
+            "hidden": torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+            "mean_hidden": torch.tensor([0.5, 0.5]),
+            "content_token_ids": [10, 11],
+            "token_count": 4,
+            "chunk_count": 1,
+        }
+        metrics = pair_metrics(encoding, encoding)
+        self.assertAlmostEqual(metrics["symmetric_relative_l2"], 0.0)
+        self.assertAlmostEqual(metrics["mean_hidden_cosine"], 1.0, places=6)
+        self.assertAlmostEqual(metrics["token_jaccard"], 1.0)
+
+    def test_class_metrics_reward_exact_real_coverage(self):
+        real = np.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+        exact = class_metrics(real, real, real_radius=0.1)
+        collapsed = class_metrics(real, real[:1], real_radius=0.1)
+        self.assertAlmostEqual(exact["real_to_synthetic_nn_mean"], 0.0)
+        self.assertGreater(
+            collapsed["real_to_synthetic_nn_mean"],
+            exact["real_to_synthetic_nn_mean"],
+        )
+        self.assertGreater(
+            exact["synthetic_pairwise_distance_mean"],
+            collapsed["synthetic_pairwise_distance_mean"],
+        )
 
 
 if __name__ == "__main__":
