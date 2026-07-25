@@ -1,4 +1,5 @@
 # original code: https://github.com/dyhan0920/PyramidNet-PyTorch/blob/master/train.py
+import json
 import os
 import time
 import numpy as np
@@ -91,16 +92,60 @@ def main(args, logger, repeat=1):
 
     best_acc_l = []
     acc_l = []
+    per_class_repeats = []
     for i in range(repeat):
         logger(f"Repeat: {i+1}/{repeat}")
         plotter = Plotter(args.save_dir, args.epochs, idx=i)
         model = define_model(args, nclass, logger)
 
-        best_acc, acc = train(args, model, train_loader, val_loader, plotter, logger)
+        best_acc, acc, best_epoch, best_per_class = train(
+            args, model, train_loader, val_loader, plotter, logger
+        )
         best_acc_l.append(best_acc)
         acc_l.append(acc)
+        if args.per_class_output:
+            per_class_repeats.append(
+                {
+                    "repeat_index": i,
+                    "best_epoch": best_epoch,
+                    "best_accuracy": float(best_acc),
+                    "last_accuracy": float(acc),
+                    "per_class_accuracy": [float(value) for value in best_per_class],
+                }
+            )
 
     logger(f'\n(Repeat {repeat}) Best, last acc:----{best_acc_l} {np.mean(best_acc_l):.1f} {np.std(best_acc_l):.1f}')
+    if args.per_class_output:
+        class_names = list(val_loader.dataset.classes)
+        per_class_matrix = np.asarray(
+            [item["per_class_accuracy"] for item in per_class_repeats],
+            dtype=np.float64,
+        )
+        payload = {
+            "schema_version": 1,
+            "class_names": class_names,
+            "repeats": per_class_repeats,
+            "mean_per_class_accuracy": {
+                class_name: float(per_class_matrix[:, index].mean())
+                for index, class_name in enumerate(class_names)
+            },
+            "std_per_class_accuracy": {
+                class_name: float(per_class_matrix[:, index].std())
+                for index, class_name in enumerate(class_names)
+            },
+            "mean_best_accuracy": float(np.mean(best_acc_l)),
+            "std_best_accuracy": float(np.std(best_acc_l)),
+            "synthetic_directory": args.imagenet_dir[0],
+            "validation_directory": args.imagenet_dir[1],
+        }
+        output_path = os.path.abspath(args.per_class_output)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        temporary_path = output_path + ".tmp"
+        with open(temporary_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(temporary_path, output_path)
+        logger(f"Per-class best-epoch accuracy: {output_path}")
 
 
 def train(args, model, train_loader, val_loader, plotter=None, logger=None):
@@ -115,6 +160,8 @@ def train(args, model, train_loader, val_loader, plotter=None, logger=None):
 
     # Load pretrained
     cur_epoch, best_acc1, best_acc5, acc1, acc5 = 0, 0, 0, 0, 0
+    best_epoch = 0
+    best_per_class = None
     if args.pretrained:
         pretrained = "{}/{}".format(args.save_dir, 'checkpoint.pth.tar')
         cur_epoch, best_acc1 = load_checkpoint(pretrained, model, optimizer)
@@ -135,7 +182,9 @@ def train(args, model, train_loader, val_loader, plotter=None, logger=None):
                                           mixup=args.mixup)
 
         if epoch % args.epoch_print_freq == 0:
-            acc1, acc5, loss_val = validate(args, val_loader, model, criterion, epoch, logger)
+            acc1, acc5, loss_val, per_class_accuracy = validate(
+                args, val_loader, model, criterion, epoch, logger
+            )
 
             if plotter != None:
                 plotter.update(epoch, acc1_tr, acc1, loss_tr, loss_val)
@@ -144,6 +193,8 @@ def train(args, model, train_loader, val_loader, plotter=None, logger=None):
             if is_best:
                 best_acc1 = acc1
                 best_acc5 = acc5
+                best_epoch = epoch
+                best_per_class = per_class_accuracy
                 if logger != None and args.verbose == True:
                     logger(f'Best accuracy (top-1 and 5): {best_acc1:.1f} {best_acc5:.1f}')
 
@@ -159,7 +210,9 @@ def train(args, model, train_loader, val_loader, plotter=None, logger=None):
             save_checkpoint(args.save_dir, state, is_best)
         scheduler.step()
 
-    return best_acc1, acc1
+    if best_per_class is None:
+        raise RuntimeError("No validation result was recorded during training")
+    return best_acc1, acc1, best_epoch, best_per_class
 
 
 def train_epoch(args,
@@ -239,6 +292,8 @@ def validate(args, val_loader, model, criterion, epoch, logger=None):
     losses = AverageMeter()
     top1 = AverageMeter()
     top5 = AverageMeter()
+    class_correct = torch.zeros(args.nclass, dtype=torch.long, device='cuda')
+    class_total = torch.zeros(args.nclass, dtype=torch.long, device='cuda')
 
     # switch to evaluate mode
     model.eval()
@@ -258,6 +313,10 @@ def validate(args, val_loader, model, criterion, epoch, logger=None):
 
         top1.update(acc1.item(), input.size(0))
         top5.update(acc5.item(), input.size(0))
+        prediction = output.argmax(dim=1)
+        class_total += torch.bincount(target, minlength=args.nclass)
+        correct_target = target[prediction.eq(target)]
+        class_correct += torch.bincount(correct_target, minlength=args.nclass)
 
         # measure elapsed time
         batch_time.update(time.time() - end)
@@ -267,7 +326,13 @@ def validate(args, val_loader, model, criterion, epoch, logger=None):
         logger(
             '(Test ) [Epoch {0}/{1}] {2} Top1 {top1.avg:.1f}  Top5 {top5.avg:.1f}  Loss {loss.avg:.3f}'
             .format(epoch, args.epochs, get_time(), top1=top1, top5=top5, loss=losses))
-    return top1.avg, top5.avg, losses.avg
+    if torch.any(class_total == 0):
+        missing = torch.nonzero(class_total == 0).flatten().cpu().tolist()
+        raise RuntimeError(f"Validation classes without samples: {missing}")
+    per_class_accuracy = (
+        class_correct.float().mul(100.0).div(class_total).cpu().tolist()
+    )
+    return top1.avg, top5.avg, losses.avg, per_class_accuracy
 
 
 def load_checkpoint(path, model, optimizer):

@@ -63,3 +63,6 @@ encoders.py
 /*.pdf
 /*.md
 !README.md
+
+# Data
+*.csv

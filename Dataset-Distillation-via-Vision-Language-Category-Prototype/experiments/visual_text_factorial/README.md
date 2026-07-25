@@ -214,3 +214,61 @@ diagnostics/<DIAGNOSTICS_ID>/
   summary/semantic_coverage_diagnostic.png
   summary/semantic_coverage_summary.json
 ```
+
+## Per-class downstream utility
+
+The original Minimax evaluations saved aggregate curves but no checkpoints or
+per-class predictions. Per-class utility therefore cannot be reconstructed
+from the completed logs. The downstream diagnostic reruns only the required
+classifier evaluations and records each class accuracy at the epoch with the
+best aggregate validation accuracy for every classifier repeat.
+
+The default run is deliberately restricted to the primary prototype
+comparison:
+
+```text
+2 generation seeds x (1 correct DCS + 4 shuffled DCS) = 10 conditions
+```
+
+It reuses all synthetic images and trains no diffusion model:
+
+```bash
+cd /linxi/T2I_DD/Dataset-Distillation-via-Vision-Language-Category-Prototype
+
+CUDA_VISIBLE_DEVICES=0 \
+DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
+BASE_RUN_ROOT=/linxi/T2I_DD/vlcp_factorial_runs/visual_text_factorial_v0 \
+RANDOMIZATION_ROOT=/linxi/T2I_DD/vlcp_shuffle_runs/visual_text_shuffle_randomization_v0 \
+DIAGNOSTICS_ID=semantic_coverage_v0 \
+bash experiments/visual_text_factorial/run_downstream_class_diagnostics.sh
+```
+
+Resume with the same command plus `RESUME=true`. To additionally run the
+no-visual interaction control, use:
+
+```bash
+VISUAL_MODES="prototype no_visual"
+```
+
+The analysis defines:
+
+```text
+per-class downstream gain = shuffled DCS accuracy - correct DCS accuracy
+```
+
+Classifier repeats are paired by repeat index because every condition starts
+from the same classifier seed. Correlations are reported both per generation
+seed and after averaging generation seeds. Main outputs are:
+
+```text
+diagnostics/<DIAGNOSTICS_ID>/downstream_per_class/
+  results/seed_<N>/<visual>_correct.json
+  results/seed_<N>/<visual>_shift<SHIFT>.json
+  summary/downstream_dino_per_class.csv
+  summary/downstream_dino_averaged_generation_seeds.csv
+  summary/downstream_dino_correlations.csv
+  summary/downstream_class_mean_gains.csv
+  summary/downstream_shift_summary.csv
+  summary/downstream_dino_correlations.png
+  summary/downstream_dino_summary.json
+```

@@ -146,6 +146,12 @@ parser.add_argument('--verbose',
                     help='to print the status at every iteration')
 parser.add_argument('-j', '--workers', default=8, type=int, help='number of data loading workers')
 parser.add_argument('--save_ckpt', type=str2bool, default=False)
+parser.add_argument(
+    '--per_class_output',
+    default='',
+    type=str,
+    help='optional JSON path for per-class validation accuracy at each repeat best epoch',
+)
 parser.add_argument('--tag', default='', type=str, help='name of experiment')
 parser.add_argument('--test', action='store_true', help='for debugging, do not save results')
 parser.add_argument('--time', action='store_true', help='measuring time for each step')

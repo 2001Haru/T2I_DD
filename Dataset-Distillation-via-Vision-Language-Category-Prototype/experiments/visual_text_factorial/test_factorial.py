@@ -6,6 +6,12 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from analyze_downstream_per_class import (
+    aggregate_generation_seeds,
+    pearson,
+    rankdata,
+    spearman,
+)
 from common import (
     condition_matrix,
     ensure_manifest,
@@ -119,6 +125,38 @@ class DiagnosticTests(unittest.TestCase):
             exact["synthetic_pairwise_distance_mean"],
             collapsed["synthetic_pairwise_distance_mean"],
         )
+
+    def test_rank_correlations_handle_ties(self):
+        self.assertEqual(rankdata([3.0, 1.0, 1.0]), [3.0, 1.5, 1.5])
+        self.assertAlmostEqual(pearson([1.0, 2.0, 3.0], [2.0, 4.0, 6.0]), 1.0)
+        self.assertAlmostEqual(spearman([1.0, 3.0, 2.0], [2.0, 6.0, 4.0]), 1.0)
+
+    def test_downstream_rows_average_generation_seeds(self):
+        template = {
+            "visual_mode": "prototype",
+            "shuffle_shift": 1,
+            "synset": "n00000001",
+            "correct_mean_accuracy": 50.0,
+            "shuffled_mean_accuracy": 52.0,
+            "downstream_gain_std_over_classifier_repeats": 1.0,
+            "coverage_distance_improvement": 0.1,
+            "fidelity_distance_improvement": 0.2,
+            "coverage_fraction_change": 0.3,
+            "precision_fraction_change": 0.4,
+            "diversity_change": 0.5,
+            "centroid_distance_improvement": 0.6,
+            "conditioning_relative_l2": 1.0,
+            "conditioning_mean_hidden_cosine": 0.8,
+            "conditioning_token_jaccard": 0.4,
+        }
+        rows = [
+            {**template, "generation_seed": 0, "downstream_gain": 2.0},
+            {**template, "generation_seed": 1, "downstream_gain": 4.0},
+        ]
+        aggregated = aggregate_generation_seeds(rows)
+        self.assertEqual(len(aggregated), 1)
+        self.assertEqual(aggregated[0]["generation_seeds"], 2)
+        self.assertEqual(aggregated[0]["downstream_gain"], 3.0)
 
 
 if __name__ == "__main__":
