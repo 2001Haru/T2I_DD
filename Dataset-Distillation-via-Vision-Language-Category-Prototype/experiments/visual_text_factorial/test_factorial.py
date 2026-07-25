@@ -10,6 +10,7 @@ from common import (
     stable_image_seed,
 )
 from summarize_results import condition_contrasts, parse_log
+from summarize_shuffle_randomization import parse_shift_runs, rank_descending
 
 
 class CommonTests(unittest.TestCase):
@@ -69,6 +70,11 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(
             contrasts["visual_x_cluster_correspondence_interaction"], [2.0, 2.0]
         )
+
+    def test_shuffle_run_parser_and_rank(self):
+        runs = parse_shift_runs(["2=/tmp/shift2", "7=/tmp/shift7"])
+        self.assertEqual(sorted(runs), [2, 7])
+        self.assertEqual(rank_descending(57.0, [57.0, 59.0, 56.0, 55.0]), 2)
 
 
 if __name__ == "__main__":

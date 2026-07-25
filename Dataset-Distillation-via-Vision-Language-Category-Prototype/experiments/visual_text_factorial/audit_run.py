@@ -106,7 +106,8 @@ def main():
             directory_matches = IMAGE_DIRECTORY_PATTERN.findall(log_text)
             if directory_matches:
                 logged_directory = directory_matches[-1].strip()
-                if str(condition_dir) not in logged_directory:
+                logged_path = Path(logged_directory).expanduser().resolve()
+                if logged_path != condition_dir.resolve():
                     report["warnings"].append(
                         f"seed={generation_seed} condition={condition}: "
                         f"log reports a different image directory: {logged_directory}"

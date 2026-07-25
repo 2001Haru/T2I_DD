@@ -116,3 +116,40 @@ The audit verifies all six manifests, paired image seeds, correct and shuffled
 prompt-source indices, DCS text hashes, image counts, completed classifier
 logs, and the synthetic directory reported by each evaluation log. It writes
 `audit.json` in the run root.
+
+## Prespecified shuffle randomization
+
+One shuffled pairing is enough to reject the claim that correct pairing is
+always best, but it cannot distinguish a general pairing effect from a lucky
+prompt-noise assignment. The randomization extension keeps the original
+shift-1 result and adds shifts 2, 4, and 7. Only the two shuffled conditions
+are generated and evaluated; label and correct-DCS results are reused from the
+base factorial run.
+
+```bash
+cd /linxi/T2I_DD/Dataset-Distillation-via-Vision-Language-Category-Prototype
+
+CUDA_VISIBLE_DEVICES=0 \
+DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
+BASE_RUN_ROOT=/linxi/T2I_DD/vlcp_factorial_runs/visual_text_factorial_v0 \
+SOURCE_RUN_ROOT=/linxi/T2I_DD/vlcp_ablation_runs/author_checkpoint_pilot_v0 \
+RANDOMIZATION_RUN_ID=visual_text_shuffle_randomization_v0 \
+SHUFFLE_SHIFTS="2 4 7" \
+GENERATION_SEEDS="0 1" \
+bash experiments/visual_text_factorial/run_shuffle_randomization.sh
+```
+
+Resume with the same command plus `RESUME=true`. The primary result is:
+
+```text
+correct DCS - mean(all prespecified shuffled DCS pairings)
+```
+
+The summary deliberately averages every declared shuffle instead of selecting
+the best one. Outputs are written to:
+
+```text
+/linxi/T2I_DD/vlcp_shuffle_runs/<RANDOMIZATION_RUN_ID>/summary/
+  shuffle_comparisons.csv
+  shuffle_summary.json
+```
