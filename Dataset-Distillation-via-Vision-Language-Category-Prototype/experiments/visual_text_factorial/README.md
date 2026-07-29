@@ -272,3 +272,66 @@ diagnostics/<DIAGNOSTICS_ID>/downstream_per_class/
   summary/downstream_dino_correlations.png
   summary/downstream_dino_summary.json
 ```
+
+## Cross-modal recombination geometry
+
+The cyclic shift number is only a permutation identifier: KMeans cluster
+indices are not ordered by visual distance. This diagnostic therefore computes
+the actual DINOv2 distance between every source prototype and the prototype
+whose DCS caption was assigned to it.
+
+For a source prototype feature `v_i`, caption-source prototype feature `v_j`,
+shuffled output `y_ij`, and paired correct-DCS output `y_ii`, it reports:
+
+```text
+tau_from_source =
+  dot(y_ij - v_i, v_j - v_i) / ||v_j - v_i||^2
+
+tau_from_correct =
+  dot(y_ij - y_ii, v_j - v_i) / ||v_j - v_i||^2
+```
+
+`tau_from_correct` isolates the feature displacement caused by caption
+reassignment because the correct and shuffled images use the same visual
+prototype and generation noise. A positive projection means that shuffling
+moved the output toward the visual mode from which the caption came. The
+diagnostic also records direction cosine, orthogonal residual, target
+similarity improvement, and the fraction with `0 <= tau_from_source <= 1`.
+
+It decodes the existing VAE cluster centers once, reuses cached synthetic-image
+DINO features when available, and performs no diffusion generation or
+classifier training:
+
+```bash
+cd /linxi/T2I_DD/Dataset-Distillation-via-Vision-Language-Category-Prototype
+
+CUDA_VISIBLE_DEVICES=0 \
+BASE_RUN_ROOT=/linxi/T2I_DD/vlcp_factorial_runs/visual_text_factorial_v0 \
+RANDOMIZATION_ROOT=/linxi/T2I_DD/vlcp_shuffle_runs/visual_text_shuffle_randomization_v0 \
+BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
+DINO_MODEL=/models/DINOv2/dinov2-base \
+DIAGNOSTICS_ID=semantic_coverage_v0 \
+bash experiments/visual_text_factorial/run_cross_modal_recombination_diagnostics.sh
+```
+
+Resume with the same command plus `RESUME=true`. If the per-class downstream
+CSV from the previous section exists, it is joined automatically. Main outputs
+are:
+
+```text
+diagnostics/<DIAGNOSTICS_ID>/cross_modal_recombination/
+  decoded_prototypes/
+  recombination_per_image.csv
+  recombination_per_class.csv
+  recombination_per_generation_shift.csv
+  recombination_per_shift.csv
+  recombination_vs_downstream_per_class.csv
+  recombination_summary.json
+  recombination_by_permutation.png
+  recombination_pair_geometry.png
+  recombination_vs_downstream.png
+```
+
+The quadratic distance and `tau` fits are exploratory. They test the proposed
+mixup-like mechanism but do not by themselves establish that DINO geometry
+causes downstream accuracy changes.
