@@ -393,3 +393,74 @@ diagnostics/<DIAGNOSTICS_ID>/cluster_member_audit/
 
 When decoded prototype images from the previous diagnostic are present, each
 montage places the decoded center first and the nearest real images after it.
+
+## Real-member recombination geometry
+
+The decoded-center diagnostic is unreliable when VAE centroids decode into
+blurred low-frequency images. This follow-up replaces each decoded centroid
+with a semantic anchor built from the real images nearest to that centroid in
+the original scaled VAE latent space:
+
+```text
+anchor_i(K) = normalize(mean(normalize(DINO(x))))
+              for the K nearest real members x of cluster i
+```
+
+The default sensitivity analysis uses `K=3,5,9`. These anchor images and the
+held-out validation images do not overlap: ranks 10 through 30 are classified
+against the ten within-class anchors in DINO space. The diagnostic reports
+10-way retrieval accuracy, own-anchor margin, and retrieval rank. A semantic
+cluster-direction interpretation should be rejected when held-out retrieval is
+near the 10% chance level or changes qualitatively across K.
+
+For visual cluster `i`, caption-source cluster `j`, paired correct image
+`y_ii`, and shuffled image `y_ij`, the primary movement metric is:
+
+```text
+unit_caption_pull_projection =
+  dot(DINO(y_ij) - DINO(y_ii), unit(anchor_j - anchor_i))
+```
+
+The output also records caption-source similarity gain, visual-target
+similarity change, off-axis displacement, cluster occupancy, and exploratory
+cluster-size correlations. It reuses all existing synthetic images and does no
+diffusion generation or classifier training.
+
+Run it after the real cluster-member audit:
+
+```bash
+cd /linxi/T2I_DD/Dataset-Distillation-via-Vision-Language-Category-Prototype
+
+CUDA_VISIBLE_DEVICES=0 \
+BASE_RUN_ROOT=/linxi/T2I_DD/vlcp_factorial_runs/visual_text_factorial_v0 \
+RANDOMIZATION_ROOT=/linxi/T2I_DD/vlcp_shuffle_runs/visual_text_shuffle_randomization_v0 \
+DINO_MODEL=/models/DINOv2/dinov2-base \
+DIAGNOSTICS_ID=semantic_coverage_v0 \
+bash experiments/visual_text_factorial/run_real_member_recombination_diagnostics.sh
+```
+
+Resume with the same command plus `RESUME=true`. Main outputs are:
+
+```text
+diagnostics/<DIAGNOSTICS_ID>/real_member_recombination/
+  anchor_validation_per_member.csv
+  anchor_validation_per_class.csv
+  anchor_validation_summary.csv
+  real_anchor_recombination_per_image.csv
+  real_anchor_recombination_per_class.csv
+  real_anchor_recombination_per_shift.csv
+  real_anchor_recombination_vs_downstream.csv
+  real_anchor_class_hypothesis_summary.csv
+  real_anchor_recombination_summary.json
+  real_anchor_validation.png
+  real_anchor_pair_geometry.png
+  real_anchor_size_response.png
+```
+
+Interpret the result in order. First require valid held-out anchors. Then check
+whether caption pull is positive and stable across K. Only after both checks
+should cluster-size relationships be interpreted as possible cross-modal
+recombination rather than generic prompt perturbation. The class-hypothesis
+CSV averages generation seeds and shifts before correlating occupancy with
+downstream gain, so the correlation sample size remains ten independent
+classes rather than treating repeated runs as independent classes.
