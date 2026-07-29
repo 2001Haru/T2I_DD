@@ -335,3 +335,61 @@ diagnostics/<DIAGNOSTICS_ID>/cross_modal_recombination/
 The quadratic distance and `tau` fits are exploratory. They test the proposed
 mixup-like mechanism but do not by themselves establish that DINO geometry
 causes downstream accuracy changes.
+
+## Real cluster-member audit
+
+Directly decoded VAE KMeans centers can be dominated by low-frequency color
+and background. This audit assigns every real ImageNette training image to its
+nearest stored center in the original scaled VAE latent space and saves the
+nearest real members for manual inspection.
+
+The distance is reported as per-latent-element RMSE rather than raw squared
+Euclidean distance. For every cluster the audit records:
+
+```text
+nearest, p10, p25, median, p75, p90, and maximum center RMSE
+nearest / median member RMSE
+nearest / p10 member RMSE
+nearest member / nearest-other-center RMSE
+assignment margin between the nearest and second-nearest centers
+```
+
+This distinction matters: the nearest available image need not be close to the
+center. A `nearest / median` ratio near one means that even the nearest member
+is not substantially more representative than a typical assigned member.
+
+The default settings replay the original prototype extraction protocol:
+`seed=0`, 512-pixel resize, batch size 10, shuffled loading, and a sampled VAE
+posterior. The original fit removed 10% LOF outliers, while this audit assigns
+all training images to the stored centers; this difference is recorded in the
+summary and should be considered when interpreting cluster sizes.
+
+```bash
+cd /linxi/T2I_DD/Dataset-Distillation-via-Vision-Language-Category-Prototype
+
+CUDA_VISIBLE_DEVICES=0 \
+DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
+BASE_RUN_ROOT=/linxi/T2I_DD/vlcp_factorial_runs/visual_text_factorial_v0 \
+BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
+RANDOMIZATION_ROOT=/linxi/T2I_DD/vlcp_shuffle_runs/visual_text_shuffle_randomization_v0 \
+DIAGNOSTICS_ID=semantic_coverage_v0 \
+bash experiments/visual_text_factorial/run_cluster_member_audit.sh
+```
+
+Resume an interrupted run with the same command plus `RESUME=true`. The VAE
+pass is replayed from the start if it was interrupted before the assignments
+CSV was completed; completed assignments are reused. Main outputs are:
+
+```text
+diagnostics/<DIAGNOSTICS_ID>/cluster_member_audit/
+  latent_assignments.csv
+  cluster_distance_summary.csv
+  class_distance_summary.csv
+  nearest_cluster_members.json
+  cluster_center_gap.png
+  montages/<synset>/cluster_<N>.png
+  cluster_member_audit_summary.json
+```
+
+When decoded prototype images from the previous diagnostic are present, each
+montage places the decoded center first and the nearest real images after it.
