@@ -109,11 +109,24 @@ def mean_anchor(features):
 
 
 def grouped_assignments(rows):
+    if not rows:
+        raise ValueError("Cluster assignment CSV is empty")
+    fields = set(rows[0])
+    if "assigned_cluster" in fields:
+        cluster_field = "assigned_cluster"
+    elif "cluster_index" in fields:
+        cluster_field = "cluster_index"
+    else:
+        raise KeyError(
+            "Cluster assignment CSV must contain 'assigned_cluster' "
+            f"(current audit schema) or 'cluster_index'; found {sorted(fields)}"
+        )
+
     grouped = defaultdict(list)
     for row in rows:
         normalized = {
             **row,
-            "cluster_index": int(float(row["cluster_index"])),
+            "cluster_index": int(float(row[cluster_field])),
             "center_rmse": float(row["center_rmse"]),
             "image_path": str(Path(row["image_path"]).resolve()),
         }

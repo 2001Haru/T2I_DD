@@ -191,7 +191,7 @@ DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
 BASE_RUN_ROOT=/linxi/T2I_DD/vlcp_factorial_runs/visual_text_factorial_v0 \
 RANDOMIZATION_ROOT=/linxi/T2I_DD/vlcp_shuffle_runs/visual_text_shuffle_randomization_v0 \
 BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
-DINO_MODEL=/models/DINOv2/dinov2-base \
+DINO_MODEL=/linxi/models/DINOv2/dinov2-base \
 DIAGNOSTICS_ID=semantic_coverage_v0 \
 bash experiments/visual_text_factorial/run_semantic_coverage_diagnostics.sh
 ```
@@ -309,7 +309,7 @@ CUDA_VISIBLE_DEVICES=0 \
 BASE_RUN_ROOT=/linxi/T2I_DD/vlcp_factorial_runs/visual_text_factorial_v0 \
 RANDOMIZATION_ROOT=/linxi/T2I_DD/vlcp_shuffle_runs/visual_text_shuffle_randomization_v0 \
 BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
-DINO_MODEL=/models/DINOv2/dinov2-base \
+DINO_MODEL=/linxi/models/DINOv2/dinov2-base \
 DIAGNOSTICS_ID=semantic_coverage_v0 \
 bash experiments/visual_text_factorial/run_cross_modal_recombination_diagnostics.sh
 ```
@@ -434,7 +434,7 @@ cd /linxi/T2I_DD/Dataset-Distillation-via-Vision-Language-Category-Prototype
 CUDA_VISIBLE_DEVICES=0 \
 BASE_RUN_ROOT=/linxi/T2I_DD/vlcp_factorial_runs/visual_text_factorial_v0 \
 RANDOMIZATION_ROOT=/linxi/T2I_DD/vlcp_shuffle_runs/visual_text_shuffle_randomization_v0 \
-DINO_MODEL=/models/DINOv2/dinov2-base \
+DINO_MODEL=/linxi/models/DINOv2/dinov2-base \
 DIAGNOSTICS_ID=semantic_coverage_v0 \
 bash experiments/visual_text_factorial/run_real_member_recombination_diagnostics.sh
 ```

@@ -6,12 +6,28 @@ from diagnose_real_member_recombination import (
     class_occupancy,
     cluster_size_percentiles,
     evaluate_heldout_member,
+    grouped_assignments,
     intuitive_pair_metrics,
     mean_anchor,
 )
 
 
 class RealMemberAnchorTest(unittest.TestCase):
+    def test_grouped_assignments_accepts_audit_column_name(self):
+        rows = [
+            {
+                "synset": "class_a",
+                "assigned_cluster": "2",
+                "center_rmse": "0.5",
+                "image_path": "example.png",
+            }
+        ]
+
+        result = grouped_assignments(rows)
+
+        self.assertIn(("class_a", 2), result)
+        self.assertEqual(result[("class_a", 2)][0]["cluster_index"], 2)
+
     def test_mean_anchor_is_normalized(self):
         anchor = mean_anchor(
             np.asarray(
