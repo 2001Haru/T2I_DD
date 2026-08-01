@@ -15,7 +15,7 @@ EXTENSION_SHUFFLE_ROOT="${EXTENSION_SHUFFLE_ROOT:-$REPO_ROOT/../vlcp_shuffle_run
 SMALL_BASE_RUN_ROOT="${SMALL_BASE_RUN_ROOT:-$REPO_ROOT/../vlcp_selective_shuffle_runs/selective_small_cluster_shuffle_v0}"
 SMALL_EXTENSION_RUN_ROOT="${SMALL_EXTENSION_RUN_ROOT:-$REPO_ROOT/../vlcp_selective_shuffle_runs/selective_small_cluster_shuffle_seed23_v0}"
 CLUSTER_SUMMARY="${CLUSTER_SUMMARY:-$BASE_SHUFFLE_ROOT/diagnostics/semantic_coverage_v0/cluster_member_audit/cluster_distance_summary.csv}"
-CONTROL_RUN_ID="${CONTROL_RUN_ID:-selective_random_mask_controls_shift1_v0}"
+CONTROL_RUN_ID="${CONTROL_RUN_ID:-selective_random_mask_controls_shift1_repeat2_v0}"
 RUN_ROOT="${RUN_ROOT:-$REPO_ROOT/../vlcp_selective_shuffle_runs/$CONTROL_RUN_ID}"
 RANDOM_TARGET_SEEDS="${RANDOM_TARGET_SEEDS:-20260801 20260802 20260803}"
 BASE_GENERATION_SEEDS="${BASE_GENERATION_SEEDS:-0 1}"
@@ -25,6 +25,8 @@ EXISTING_RANDOM_TARGET_SEED="${EXISTING_RANDOM_TARGET_SEED:-20260731}"
 SELECTED_COUNT="${SELECTED_COUNT:-3}"
 LINK_MODE="${LINK_MODE:-symlink}"
 CLASSIFIER_SEED="${CLASSIFIER_SEED:-0}"
+CLASSIFIER_REPEATS="${CLASSIFIER_REPEATS:-2}"
+EVAL_GPUS="${EVAL_GPUS:-0 1}"
 RESUME="${RESUME:-false}"
 
 for required in \
@@ -59,7 +61,8 @@ SHUFFLE_SHIFTS=$SHUFFLE_SHIFTS
 EXISTING_RANDOM_TARGET_SEED=$EXISTING_RANDOM_TARGET_SEED
 SELECTED_COUNT=$SELECTED_COUNT
 LINK_MODE=$LINK_MODE
-CLASSIFIER_SEED=$CLASSIFIER_SEED"
+CLASSIFIER_SEED=$CLASSIFIER_SEED
+CLASSIFIER_REPEATS=$CLASSIFIER_REPEATS"
 if [[ -f "$CONFIG_FILE" ]]; then
   if [[ "$(<"$CONFIG_FILE")" != "$CONFIG_CONTENT" ]]; then
     echo "Resume configuration differs from $CONFIG_FILE" >&2
@@ -94,6 +97,15 @@ fi
 read -r -a base_generation_seed_args <<< "$BASE_GENERATION_SEEDS"
 read -r -a extension_generation_seed_args <<< "$EXTENSION_GENERATION_SEEDS"
 read -r -a random_target_seed_args <<< "$RANDOM_TARGET_SEEDS"
+read -r -a eval_gpu_args <<< "$EVAL_GPUS"
+if (( ${#eval_gpu_args[@]} == 0 )); then
+  echo "EVAL_GPUS must contain at least one GPU index" >&2
+  exit 1
+fi
+if (( CLASSIFIER_REPEATS <= 0 )); then
+  echo "CLASSIFIER_REPEATS must be positive" >&2
+  exit 1
+fi
 
 for random_target_seed in "${random_target_seed_args[@]}"; do
   if [[ "$random_target_seed" == "$EXISTING_RANDOM_TARGET_SEED" ]]; then
@@ -133,6 +145,7 @@ evaluate_random_mask() {
   local log_path="$2"
   local per_class_path="$3"
   local tag="$4"
+  local gpu="$5"
   mkdir -p "$(dirname "$log_path")"
   if grep -q "Best, last acc" "$log_path" 2>/dev/null && [[ -f "$per_class_path" ]]; then
     echo "==> Reusing completed classifier: $tag"
@@ -146,10 +159,10 @@ evaluate_random_mask() {
       exit 1
     fi
   fi
-  echo "==> Evaluating $tag"
+  echo "==> Evaluating $tag on GPU $gpu"
   (
     cd "$EVALUATION_DIR"
-    python train.py \
+    CUDA_VISIBLE_DEVICES="$gpu" python train.py \
       -d imagenet \
       --imagenet_dir "$synthetic_dir" "$DATA_ROOT" \
       -n resnet_ap \
@@ -158,25 +171,56 @@ evaluate_random_mask() {
       --ipc 10 \
       --tag "$tag" \
       --slct_type random \
-      --repeat 3 \
+      --repeat "$CLASSIFIER_REPEATS" \
       --spec nette \
       --seed "$CLASSIFIER_SEED" \
       --per_class_output "$per_class_path"
   ) 2>&1 | tee "$log_path"
 }
 
+wait_for_batch() {
+  local failed=0
+  local index
+  for index in "${!batch_pids[@]}"; do
+    if ! wait "${batch_pids[$index]}"; then
+      echo "Classifier job failed: ${batch_labels[$index]}" >&2
+      failed=1
+    fi
+  done
+  batch_pids=()
+  batch_labels=()
+  if (( failed != 0 )); then
+    return 1
+  fi
+}
+
+batch_pids=()
+batch_labels=()
+gpu_cursor=0
 for random_target_seed in "${random_target_seed_args[@]}"; do
   for shift in $SHUFFLE_SHIFTS; do
     for generation_seed in $BASE_GENERATION_SEEDS $EXTENSION_GENERATION_SEEDS; do
       evaluation_dir="$RUN_ROOT/mask_$random_target_seed/shift_$shift/evaluation/seed_$generation_seed"
+      gpu="${eval_gpu_args[$gpu_cursor]}"
       evaluate_random_mask \
         "$RUN_ROOT/mask_$random_target_seed/shift_$shift/synthetic/seed_$generation_seed/random3_shuffled" \
         "$evaluation_dir/random3_shuffled.log" \
         "$evaluation_dir/random3_shuffled.per_class.json" \
-        "random_mask_${CONTROL_RUN_ID}_m${random_target_seed}_s${shift}_g${generation_seed}"
+        "random_mask_${CONTROL_RUN_ID}_m${random_target_seed}_s${shift}_g${generation_seed}" \
+        "$gpu" &
+      batch_pids+=("$!")
+      batch_labels+=("mask=$random_target_seed shift=$shift seed=$generation_seed gpu=$gpu")
+      ((gpu_cursor += 1))
+      if (( gpu_cursor == ${#eval_gpu_args[@]} )); then
+        wait_for_batch
+        gpu_cursor=0
+      fi
     done
   done
 done
+if (( ${#batch_pids[@]} > 0 )); then
+  wait_for_batch
+fi
 
 python "$EXPERIMENT_DIR/summarize_random_mask_controls.py" \
   --small-base-run-root "$SMALL_BASE_RUN_ROOT" \
@@ -187,6 +231,7 @@ python "$EXPERIMENT_DIR/summarize_random_mask_controls.py" \
   --base-generation-seeds "${base_generation_seed_args[@]}" \
   --extension-generation-seeds "${extension_generation_seed_args[@]}" \
   --shuffle-shifts $SHUFFLE_SHIFTS \
+  --classifier-repeats "$CLASSIFIER_REPEATS" \
   --output-dir "$RUN_ROOT/summary"
 
 echo "Random-mask controls complete: $RUN_ROOT"

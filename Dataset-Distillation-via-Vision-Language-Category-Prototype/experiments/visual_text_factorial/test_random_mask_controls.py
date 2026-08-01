@@ -1,9 +1,24 @@
 import unittest
+import tempfile
+from pathlib import Path
 
-from summarize_random_mask_controls import aggregate_by_generation, grouped_rows
+from summarize_random_mask_controls import (
+    aggregate_by_generation,
+    grouped_rows,
+    parse_log,
+)
 
 
 class RandomMaskControlSummaryTest(unittest.TestCase):
+    def test_log_parser_uses_prespecified_repeat_prefix(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.log"
+            path.write_text(
+                "Best, last acc:----[50.0, 60.0, 99.0]\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(parse_log(path, classifier_repeats=2), [50.0, 60.0])
+
     def test_generation_seed_is_the_aggregate_unit(self):
         rows = []
         for generation_seed, values in ((0, (1.0, 3.0)), (1, (-1.0, 1.0))):

@@ -32,11 +32,12 @@ def parse_args():
         "--extension-generation-seeds", type=int, nargs="+", default=(2, 3)
     )
     parser.add_argument("--shuffle-shifts", type=int, nargs="+", default=(1, 2, 4, 7))
+    parser.add_argument("--classifier-repeats", type=int, default=3)
     parser.add_argument("--output-dir", required=True)
     return parser.parse_args()
 
 
-def parse_log(path):
+def parse_log(path, classifier_repeats=None):
     path = Path(path)
     if not path.is_file():
         raise FileNotFoundError(f"Missing evaluation log: {path}")
@@ -48,6 +49,15 @@ def parse_log(path):
     values = [float(value) for value in ast.literal_eval(matches[-1])]
     if not values:
         raise ValueError(f"Empty classifier result list in {path}")
+    if classifier_repeats is not None:
+        if classifier_repeats <= 0:
+            raise ValueError("classifier-repeats must be positive")
+        if len(values) < classifier_repeats:
+            raise ValueError(
+                f"Expected at least {classifier_repeats} classifier repeats, "
+                f"found {len(values)}: {path}"
+            )
+        values = values[:classifier_repeats]
     return values
 
 
@@ -217,8 +227,8 @@ def main():
                     random_path = new_random_log(
                         args, mask_seed, shift, generation_seed
                     )
-                small_values = parse_log(small_path)
-                random_values = parse_log(random_path)
+                small_values = parse_log(small_path, args.classifier_repeats)
+                random_values = parse_log(random_path, args.classifier_repeats)
                 differences = paired_subtract(small_values, random_values)
                 rows.append(
                     {
@@ -263,6 +273,11 @@ def main():
             "primary_statistic": (
                 "For each random mask, average small3-random3 over shifts within "
                 "each generation seed, then summarize the four generation means."
+            ),
+            "classifier_repeats": args.classifier_repeats,
+            "classifier_repeat_policy": (
+                "Use the first N classifier repeats from every log so existing "
+                "repeat-3 and new repeat-2 conditions remain paired."
             ),
             "caveat": (
                 "The four generation seeds are the primary repeats. Shifts and "

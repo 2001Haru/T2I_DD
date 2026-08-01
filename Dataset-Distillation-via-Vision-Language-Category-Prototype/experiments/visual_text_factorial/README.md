@@ -548,17 +548,21 @@ After generation seeds 0-3 are complete, compare `small3_shuffled` against
 three additional fixed random selections from the seven non-small clusters:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 \
 DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
 RANDOM_TARGET_SEEDS="20260801 20260802 20260803" \
+CLASSIFIER_REPEATS=2 \
+EVAL_GPUS="0 1" \
 bash experiments/visual_text_factorial/run_random_mask_controls.sh
 ```
 
 This runner reuses all existing correct and shuffled images. It does not run
 diffusion or retrain `small3_shuffled`. The focused default fixes the canonical
-cyclic shift to 1 and contains 12 new classifier jobs (three masks and four
-generation seeds). This prioritizes replication over random target masks rather
-than treating arbitrary cyclic shifts as independent evidence. The summary
-treats generation seed as the primary repeat and includes the original
-`20260731` random mask as a fourth control. Outputs are written below
-`../vlcp_selective_shuffle_runs/selective_random_mask_controls_shift1_v0/summary`.
+cyclic shift to 1 and contains 12 dataset conditions (three masks and four
+generation seeds). Each condition uses two classifier repeats, for 24 training
+runs total. Conditions are dispatched across GPU 0 and GPU 1 in parallel. This
+prioritizes replication over random target masks rather than treating arbitrary
+cyclic shifts as independent evidence. Existing repeat-3 logs are compared using
+their prespecified first two repeats. The summary treats generation seed as the
+primary repeat and includes the original `20260731` random mask as a fourth
+control. Outputs are written below
+`../vlcp_selective_shuffle_runs/selective_random_mask_controls_shift1_repeat2_v0/summary`.
