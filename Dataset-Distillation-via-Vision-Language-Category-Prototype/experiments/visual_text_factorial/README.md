@@ -555,8 +555,10 @@ bash experiments/visual_text_factorial/run_random_mask_controls.sh
 ```
 
 This runner reuses all existing correct and shuffled images. It does not run
-diffusion or retrain `small3_shuffled`; the default matrix contains 48 new
-classifier jobs (three masks, four shifts, four generation seeds). The summary
+diffusion or retrain `small3_shuffled`. The focused default fixes the canonical
+cyclic shift to 1 and contains 12 new classifier jobs (three masks and four
+generation seeds). This prioritizes replication over random target masks rather
+than treating arbitrary cyclic shifts as independent evidence. The summary
 treats generation seed as the primary repeat and includes the original
 `20260731` random mask as a fourth control. Outputs are written below
-`../vlcp_selective_shuffle_runs/selective_random_mask_controls_v0/summary`.
+`../vlcp_selective_shuffle_runs/selective_random_mask_controls_shift1_v0/summary`.
