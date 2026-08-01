@@ -32,6 +32,12 @@ def parse_args():
     parser.add_argument("--cluster-summary", required=True)
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--generation-seeds", type=int, nargs="+", default=(0, 1))
+    parser.add_argument(
+        "--conditions",
+        nargs="+",
+        choices=HYBRID_CONDITIONS,
+        default=HYBRID_CONDITIONS,
+    )
     parser.add_argument("--selected-count", type=int, default=3)
     parser.add_argument("--random-target-seed", type=int, default=20260731)
     parser.add_argument(
@@ -350,6 +356,8 @@ def main():
                 ("small3_shuffled", "small"),
                 ("random3_shuffled", "random"),
             ):
+                if condition not in args.conditions:
+                    continue
                 records = build_hybrid_records(
                     correct_root,
                     shuffled_root,

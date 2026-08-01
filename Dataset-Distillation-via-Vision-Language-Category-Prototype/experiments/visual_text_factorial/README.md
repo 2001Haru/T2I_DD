@@ -541,3 +541,22 @@ bash experiments/visual_text_factorial/run_selective_shuffle_seed_extension.sh
 
 Resume the same run with `RESUME=true`. The default output is
 `../vlcp_selective_shuffle_runs/selective_small_cluster_shuffle_seed23_v0`.
+
+### Multiple random-mask controls
+
+After generation seeds 0-3 are complete, compare `small3_shuffled` against
+three additional fixed random selections from the seven non-small clusters:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
+RANDOM_TARGET_SEEDS="20260801 20260802 20260803" \
+bash experiments/visual_text_factorial/run_random_mask_controls.sh
+```
+
+This runner reuses all existing correct and shuffled images. It does not run
+diffusion or retrain `small3_shuffled`; the default matrix contains 48 new
+classifier jobs (three masks, four shifts, four generation seeds). The summary
+treats generation seed as the primary repeat and includes the original
+`20260731` random mask as a fourth control. Outputs are written below
+`../vlcp_selective_shuffle_runs/selective_random_mask_controls_v0/summary`.

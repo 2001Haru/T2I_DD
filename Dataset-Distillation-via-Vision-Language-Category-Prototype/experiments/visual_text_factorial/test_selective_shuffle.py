@@ -1,9 +1,11 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from build_selective_shuffle import (
     build_hybrid_records,
+    parse_args,
     select_cluster_targets,
 )
 
@@ -33,6 +35,24 @@ def prompt_record(synset, index, prompt_source_index):
 
 
 class SelectiveShuffleTest(unittest.TestCase):
+    def test_conditions_can_limit_builder_to_random_control(self):
+        with mock.patch(
+            "sys.argv",
+            [
+                "build_selective_shuffle.py",
+                "--base-run-root",
+                "base",
+                "--cluster-summary",
+                "clusters.csv",
+                "--output-root",
+                "output",
+                "--conditions",
+                "random3_shuffled",
+            ],
+        ):
+            args = parse_args()
+        self.assertEqual(args.conditions, ["random3_shuffled"])
+
     def test_target_selection_finds_smallest_and_is_deterministic(self):
         rows = cluster_rows()
 
