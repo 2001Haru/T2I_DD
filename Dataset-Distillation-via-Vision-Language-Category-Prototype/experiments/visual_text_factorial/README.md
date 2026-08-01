@@ -524,3 +524,20 @@ The primary localization contrast is `small3_shuffled - random3_shuffled`.
 `small3_shuffled - correct` tests whether the targeted intervention is itself
 beneficial, while `all_shuffled - small3_shuffled` tests whether improvements
 require changing clusters beyond the smallest three.
+
+### Additional generation seeds
+
+Use the focused extension runner to test new generation seeds without training
+the all-shuffled controls. It generates the paired source images required to
+assemble the hybrids, then evaluates only `correct`, `small3_shuffled`, and
+`random3_shuffled`:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 \
+DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
+GENERATION_SEEDS="2 3" \
+bash experiments/visual_text_factorial/run_selective_shuffle_seed_extension.sh
+```
+
+Resume the same run with `RESUME=true`. The default output is
+`../vlcp_selective_shuffle_runs/selective_small_cluster_shuffle_seed23_v0`.

@@ -17,6 +17,21 @@ CONDITIONS = (
     "small3_shuffled",
     "random3_shuffled",
 )
+CONTRAST_PAIRS = (
+    ("all_shuffled_minus_correct", "all_shuffled", "correct"),
+    ("small3_shuffled_minus_correct", "small3_shuffled", "correct"),
+    ("random3_shuffled_minus_correct", "random3_shuffled", "correct"),
+    (
+        "small3_shuffled_minus_random3_shuffled",
+        "small3_shuffled",
+        "random3_shuffled",
+    ),
+    (
+        "all_shuffled_minus_small3_shuffled",
+        "all_shuffled",
+        "small3_shuffled",
+    ),
+)
 
 
 def parse_args():
@@ -31,7 +46,14 @@ def parse_args():
         metavar="SHIFT=RUN_ROOT",
     )
     parser.add_argument("--hybrid-run-root", required=True)
+    parser.add_argument("--correct-evaluation-root")
     parser.add_argument("--source-per-class-root")
+    parser.add_argument(
+        "--conditions",
+        nargs="+",
+        choices=CONDITIONS,
+        default=CONDITIONS,
+    )
     parser.add_argument("--generation-seeds", type=int, nargs="+", default=(0, 1))
     parser.add_argument("--output-dir", required=True)
     return parser.parse_args()
@@ -59,8 +81,15 @@ def evaluation_log(
     base_run_root,
     shuffle_runs,
     hybrid_run_root,
+    correct_evaluation_root=None,
 ):
     if condition == "correct":
+        if correct_evaluation_root:
+            return (
+                Path(correct_evaluation_root)
+                / f"seed_{generation_seed}"
+                / "correct.log"
+            )
         return (
             Path(base_run_root)
             / "evaluation"
@@ -109,13 +138,15 @@ def plot_contrasts(rows, output_path):
     matplotlib.use("Agg")
     import matplotlib.pyplot as pyplot
 
-    contrast_names = (
-        "all_shuffled_minus_correct",
-        "small3_shuffled_minus_correct",
-        "random3_shuffled_minus_correct",
-        "small3_shuffled_minus_random3_shuffled",
-        "all_shuffled_minus_small3_shuffled",
-    )
+    available = {row["contrast"] for row in rows}
+    contrast_names = [name for name, _, _ in CONTRAST_PAIRS if name in available]
+    short_names = {
+        "all_shuffled_minus_correct": "all-correct",
+        "small3_shuffled_minus_correct": "small-correct",
+        "random3_shuffled_minus_correct": "random-correct",
+        "small3_shuffled_minus_random3_shuffled": "small-random",
+        "all_shuffled_minus_small3_shuffled": "all-small",
+    }
     shifts = sorted({int(row["shuffle_shift"]) for row in rows})
     figure, axes = pyplot.subplots(1, len(shifts), figsize=(5 * len(shifts), 5))
     if len(shifts) == 1:
@@ -134,13 +165,7 @@ def plot_contrasts(rows, output_path):
         axis.axhline(0.0, linestyle="--", color="black")
         axis.set_xticks(
             range(len(contrast_names)),
-            [
-                "all-correct",
-                "small-correct",
-                "random-correct",
-                "small-random",
-                "all-small",
-            ],
+            [short_names[name] for name in contrast_names],
             rotation=35,
             ha="right",
         )
@@ -274,25 +299,16 @@ def main():
 
     condition_rows = []
     contrast_rows = []
-    contrast_pairs = (
-        ("all_shuffled_minus_correct", "all_shuffled", "correct"),
-        ("small3_shuffled_minus_correct", "small3_shuffled", "correct"),
-        ("random3_shuffled_minus_correct", "random3_shuffled", "correct"),
-        (
-            "small3_shuffled_minus_random3_shuffled",
-            "small3_shuffled",
-            "random3_shuffled",
-        ),
-        (
-            "all_shuffled_minus_small3_shuffled",
-            "all_shuffled",
-            "small3_shuffled",
-        ),
+    selected_conditions = tuple(args.conditions)
+    contrast_pairs = tuple(
+        pair
+        for pair in CONTRAST_PAIRS
+        if pair[1] in selected_conditions and pair[2] in selected_conditions
     )
     for shift in shifts:
         for generation_seed in args.generation_seeds:
             values = {}
-            for condition in CONDITIONS:
+            for condition in selected_conditions:
                 log_path = evaluation_log(
                     condition,
                     shift,
@@ -300,6 +316,7 @@ def main():
                     args.base_run_root,
                     shuffle_runs,
                     args.hybrid_run_root,
+                    args.correct_evaluation_root,
                 )
                 accuracies = parse_log(log_path)
                 values[condition] = accuracies
