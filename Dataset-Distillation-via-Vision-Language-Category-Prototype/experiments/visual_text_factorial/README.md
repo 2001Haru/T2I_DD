@@ -464,3 +464,63 @@ recombination rather than generic prompt perturbation. The class-hypothesis
 CSV averages generation seeds and shifts before correlating occupancy with
 downstream gain, so the correlation sample size remains ten independent
 classes rather than treating repeated runs as independent classes.
+
+## Selective small-cluster shuffle
+
+This control tests whether the class-level relationship between minimum
+cluster occupancy and shuffle gain localizes to the smallest visual clusters.
+It uses four settings:
+
+```text
+correct           all ten images come from the paired correct-DCS dataset
+all_shuffled      all ten images come from the existing shuffled-DCS dataset
+small3_shuffled   only the three least-populated visual clusters use shuffled images
+random3_shuffled  three fixed non-small clusters use shuffled images
+```
+
+`random3_shuffled` samples from the seven clusters outside `small3`, so the two
+selective target sets never overlap. The target selection is fixed across
+generation seeds and shifts. Every hybrid image is linked from an existing
+correct or shuffled image with the same visual prototype and image seed; no
+diffusion generation is performed.
+
+The runner trains classifiers only for `small3_shuffled` and
+`random3_shuffled`. Existing correct and all-shuffled evaluation logs are
+reused in the four-way summary:
+
+```bash
+cd /linxi/T2I_DD/Dataset-Distillation-via-Vision-Language-Category-Prototype
+
+CUDA_VISIBLE_DEVICES=0 \
+DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
+BASE_RUN_ROOT=/linxi/T2I_DD/vlcp_factorial_runs/visual_text_factorial_v0 \
+RANDOMIZATION_ROOT=/linxi/T2I_DD/vlcp_shuffle_runs/visual_text_shuffle_randomization_v0 \
+DIAGNOSTICS_ID=semantic_coverage_v0 \
+bash experiments/visual_text_factorial/run_selective_shuffle_experiment.sh
+```
+
+Resume with the same command plus `RESUME=true`. With the default two
+generation seeds and four shifts, the runner creates 16 new classifier jobs:
+two hybrid conditions per paired seed/shift cell. Hybrid images are symbolic
+links and require negligible additional dataset storage. Main outputs are:
+
+```text
+vlcp_selective_shuffle_runs/selective_small_cluster_shuffle_v0/
+  target_selections.json
+  shift_<S>/synthetic/seed_<G>/small3_shuffled/
+  shift_<S>/synthetic/seed_<G>/random3_shuffled/
+  shift_<S>/evaluation/seed_<G>/*.log
+  shift_<S>/evaluation/seed_<G>/*.per_class.json
+  summary/selective_conditions.csv
+  summary/selective_contrasts.csv
+  summary/selective_aggregate.csv
+  summary/selective_per_class.csv
+  summary/selective_per_class_aggregate.csv
+  summary/selective_shuffle_contrasts.png
+  summary/selective_summary.json
+```
+
+The primary localization contrast is `small3_shuffled - random3_shuffled`.
+`small3_shuffled - correct` tests whether the targeted intervention is itself
+beneficial, while `all_shuffled - small3_shuffled` tests whether improvements
+require changing clusters beyond the smallest three.
