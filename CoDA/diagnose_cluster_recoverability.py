@@ -40,6 +40,7 @@ from postprocess import hdbscan_post
 
 METRICS = ("top1", "macro_f1", "balanced_accuracy")
 CLASSIFIERS = ("linear_probe", "nearest_centroid")
+MINIMUM_CV_CLUSTER_SIZE = 2
 
 
 def parse_args():
@@ -625,7 +626,27 @@ def evaluate_class(
     base_seed,
     ridge_alpha,
 ):
-    counts = np.bincount(labels)
+    original_counts = np.bincount(labels)
+    excluded_labels = np.flatnonzero(original_counts < MINIMUM_CV_CLUSTER_SIZE)
+    if len(excluded_labels):
+        print(
+            f"CV support exclusion for {class_key}: clusters "
+            f"{excluded_labels.tolist()} contain "
+            f"{int(original_counts[excluded_labels].sum())} image(s)",
+            flush=True,
+        )
+        retained = ~np.isin(labels, excluded_labels)
+        features = features[retained]
+        labels = labels[retained]
+    retained_labels = np.unique(labels)
+    if len(retained_labels) < 2:
+        raise ValueError(
+            f"Fewer than two evaluable clusters in {class_key}: "
+            f"{original_counts.tolist()}"
+        )
+    remap = {int(label): index for index, label in enumerate(retained_labels)}
+    labels = np.asarray([remap[int(label)] for label in labels], dtype=np.int64)
+    counts = np.bincount(labels, minlength=len(retained_labels))
     n_splits = min(folds_requested, int(counts.min()))
     if n_splits < 2:
         raise ValueError(f"Not enough images for CV in {class_key}: {counts.tolist()}")
@@ -663,7 +684,14 @@ def evaluate_class(
         "spec": spec,
         "class_id": class_id,
         "class_name": class_name,
-        "images": len(labels),
+        "images": int(original_counts.sum()),
+        "evaluated_images": len(labels),
+        "excluded_sparse_images": int(
+            original_counts[excluded_labels].sum()
+        ),
+        "excluded_sparse_clusters": excluded_labels.tolist(),
+        "original_cluster_counts": original_counts.tolist(),
+        "evaluated_cluster_ids": retained_labels.tolist(),
         "cluster_counts": counts.tolist(),
         "folds": n_splits,
         "true": true_metrics,
@@ -720,6 +748,12 @@ def summarize_encoder(encoder_name, results, null_partitions):
                         class_name=result["class_name"],
                         class_key=result["class_key"],
                         images=result["images"],
+                        evaluated_images=result["evaluated_images"],
+                        excluded_sparse_images=result["excluded_sparse_images"],
+                        excluded_sparse_clusters=";".join(
+                            str(value)
+                            for value in result["excluded_sparse_clusters"]
+                        ),
                         minimum_cluster_size=min(result["cluster_counts"]),
                         maximum_cluster_size=max(result["cluster_counts"]),
                     )
@@ -894,6 +928,11 @@ def main():
             "evaluated_images": int(
                 sum(sample["included_in_original_partition"] for sample in samples)
             ),
+            "cv_support_policy": (
+                "clusters with fewer than two assigned images cannot support held-out "
+                "evaluation and are excluded symmetrically from the true partition "
+                "and its exact-occupancy matched-random null"
+            ),
             "classes": class_metadata,
         },
     )
@@ -1003,6 +1042,22 @@ def main():
                 row["evaluated_images"] for row in class_metadata
             ),
             "total_images": sum(row["images"] for row in class_metadata),
+            "cv_minimum_cluster_size": MINIMUM_CV_CLUSTER_SIZE,
+            "cv_sparse_clusters": sum(
+                sum(
+                    count < MINIMUM_CV_CLUSTER_SIZE
+                    for count in row["cluster_counts"]
+                )
+                for row in class_metadata
+            ),
+            "cv_sparse_images": sum(
+                sum(
+                    count
+                    for count in row["cluster_counts"]
+                    if count < MINIMUM_CV_CLUSTER_SIZE
+                )
+                for row in class_metadata
+            ),
         },
         "primary": primary,
         "configuration": {

@@ -49,6 +49,30 @@ class ClusterRecoverabilityTest(unittest.TestCase):
         self.assertGreater(true_value, 0.95)
         self.assertGreater(true_value - null_mean, 0.4)
 
+    def test_singleton_cluster_is_reported_and_excluded_from_cv(self):
+        rng = np.random.default_rng(19)
+        labels = np.asarray([0] * 12 + [1] * 12 + [2], dtype=np.int64)
+        features = np.eye(3, dtype=np.float32)[labels]
+        features = features + rng.normal(0.0, 0.02, size=features.shape)
+        features = features / np.linalg.norm(features, axis=1, keepdims=True)
+        result = evaluate_class(
+            "imageB:n00000002",
+            "imageB",
+            "n00000002",
+            "toy singleton",
+            features.astype(np.float32),
+            labels,
+            5,
+            5,
+            5,
+            321,
+            1.0,
+        )
+        self.assertEqual(result["excluded_sparse_clusters"], [2])
+        self.assertEqual(result["excluded_sparse_images"], 1)
+        self.assertEqual(result["evaluated_images"], 24)
+        self.assertEqual(result["cluster_counts"], [12, 12])
+
     def test_partition_uses_reconstructed_masks_and_keeps_voronoi_audit(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

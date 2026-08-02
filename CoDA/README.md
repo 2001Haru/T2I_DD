@@ -138,6 +138,10 @@ five folds, 100 matched-random partitions for nearest-centroid, and the first
 20 matched partitions for the more expensive ridge linear probe. The primary
 pre-registered statistic is combined nearest-centroid Macro-F1 relative to its
 100-partition matched-random null; the linear probe is a supporting check.
+Clusters containing only one assigned image cannot support held-out
+classification. They are reported in the CSV and summary and excluded from
+both the true-label CV and its matched-random null; they are not merged into a
+different cluster.
 
 Outputs are isolated under:
 
