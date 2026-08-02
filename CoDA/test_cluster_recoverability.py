@@ -99,6 +99,7 @@ class ClusterRecoverabilityTest(unittest.TestCase):
                 "coverage_fraction": 0.75,
                 "initial_hdbscan_clusters": 2,
                 "maximum_representative_match_rmse": 0.0,
+                "representative_match_passed": True,
                 "representative_match_rmse": [0.0, 0.0],
                 "cluster_origins": ["hdbscan_initial", "hdbscan_initial"],
                 "representative_source_indices": [2, 0],

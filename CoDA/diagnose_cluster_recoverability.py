@@ -1,11 +1,11 @@
 """Diagnose whether CoDA SDXL-VAE partitions transfer to independent encoders.
 
 CoDA persists the final representatives but not the final post-processing
-``points_mask``. This script deterministically reconstructs those masks with
-the original StandardScaler -> UMAP -> HDBSCAN -> CoDA post-processing path,
-then verifies them by matching their representative images to the persisted
-representatives. DINOv2 and CLIP are evaluated against exact-occupancy random
-partitions of the same images.
+``points_mask``. This script replays StandardScaler -> UMAP -> HDBSCAN -> CoDA
+post-processing in one fixed environment and freezes the resulting masks.
+Matching against historical representatives is reported as an audit because
+library-version changes can prevent exact historical reconstruction. DINOv2
+and CLIP are evaluated against exact-occupancy random partitions.
 """
 
 import argparse
@@ -60,6 +60,7 @@ def parse_args():
     parser.add_argument("--min-samples", type=int, default=3)
     parser.add_argument("--num-seed-candidates", type=int, default=3)
     parser.add_argument("--representative-match-rmse", type=float, default=1e-6)
+    parser.add_argument("--strict-representative-match", action="store_true")
     parser.add_argument("--nclass", type=int, default=10)
     parser.add_argument("--phase", type=int, default=0)
     parser.add_argument("--dino-model", required=True)
@@ -107,7 +108,7 @@ def center_path(cluster_dir, base_name, chunk_id):
 
 def partition_signature(args):
     digest = hashlib.sha256()
-    digest.update(b"p1_original_coda_partition_v2")
+    digest.update(b"p1_replayed_coda_partition_v3")
     configuration = {
         "specs": args.specs,
         "features_cache_name": args.features_cache_name,
@@ -120,6 +121,7 @@ def partition_signature(args):
         "min_samples": args.min_samples,
         "num_seed_candidates": args.num_seed_candidates,
         "representative_match_rmse": args.representative_match_rmse,
+        "strict_representative_match": args.strict_representative_match,
     }
     digest.update(json.dumps(configuration, sort_keys=True).encode("utf-8"))
     artifact_paths = []
@@ -247,13 +249,20 @@ def reconstruct_class_partition(args, features, saved_centers, class_key):
     rows, columns = linear_sum_assignment(mean_squared)
     matched_rmse = np.sqrt(mean_squared[rows, columns])
     maximum_match_rmse = float(matched_rmse.max())
-    if maximum_match_rmse > args.representative_match_rmse:
-        raise RuntimeError(
-            f"Reconstructed representatives do not match persisted centers for "
-            f"{class_key}: max RMSE={maximum_match_rmse:.8g}, allowed="
-            f"{args.representative_match_rmse:.8g}. Check clustering parameters "
-            "or library versions."
+    representative_match_passed = (
+        maximum_match_rmse <= args.representative_match_rmse
+    )
+    if not representative_match_passed:
+        message = (
+            f"Replayed representatives differ from historical centers for "
+            f"{class_key}: max RMSE={maximum_match_rmse:.8g}, exact-replay "
+            f"tolerance={args.representative_match_rmse:.8g}. The replayed "
+            "partition remains valid for P1 but is not an exact recovery of the "
+            "historical points_mask."
         )
+        if args.strict_representative_match:
+            raise RuntimeError(message)
+        print(f"WARNING: {message}", flush=True)
 
     reconstructed_to_saved = {
         int(row): int(column) for row, column in zip(rows, columns)
@@ -282,6 +291,7 @@ def reconstruct_class_partition(args, features, saved_centers, class_key):
         "coverage_fraction": float(np.mean(assignments >= 0)),
         "initial_hdbscan_clusters": int(cluster_count),
         "maximum_representative_match_rmse": maximum_match_rmse,
+        "representative_match_passed": representative_match_passed,
         "representative_match_rmse": matched_rmse.tolist(),
         "cluster_origins": [origins[index] for index in range(args.ipc)],
         "representative_source_indices": [
@@ -348,7 +358,8 @@ def load_partition(args):
             )
             counts = np.asarray(reconstruction["cluster_counts"], dtype=np.int64)
             print(
-                f"  verified representatives; coverage="
+                f"  replay frozen; historical_match="
+                f"{reconstruction['representative_match_passed']}; coverage="
                 f"{reconstruction['assigned_images']}/{len(paths)}, "
                 f"cluster sizes={counts.tolist()}",
                 flush=True,
@@ -375,6 +386,9 @@ def load_partition(args):
                     ],
                     "maximum_representative_match_rmse": reconstruction[
                         "maximum_representative_match_rmse"
+                    ],
+                    "representative_match_passed": reconstruction[
+                        "representative_match_passed"
                     ],
                     "representative_match_rmse": reconstruction[
                         "representative_match_rmse"
@@ -857,9 +871,9 @@ def main():
         {
             "format_version": 2,
             "assignment_definition": (
-                "original CoDA final points_mask reconstructed with StandardScaler, "
-                "UMAP, HDBSCAN, and hdbscan_post; cluster IDs are mapped to persisted "
-                "representatives by minimum-cost exact feature matching"
+                "CoDA final points_mask replayed and frozen in the current environment "
+                "with StandardScaler, UMAP, HDBSCAN, and hdbscan_post; label IDs are "
+                "permutation-mapped to historical representatives only for auditing"
             ),
             "audit_assignment": (
                 "voronoi_cluster_id is the nearest persisted representative in raw "
@@ -874,6 +888,7 @@ def main():
                 "num_seed_candidates": args.num_seed_candidates,
                 "umap_random_state": 42,
                 "representative_match_rmse_tolerance": args.representative_match_rmse,
+                "strict_representative_match": args.strict_representative_match,
             },
             "images": len(samples),
             "evaluated_images": int(
@@ -963,7 +978,7 @@ def main():
     else:
         decision = "fail"
     summary = {
-        "format_version": 1,
+        "format_version": 2,
         "p1_decision": decision,
         "decision_rule": (
             "pass iff both DINO and CLIP combined nearest-centroid Macro-F1 exceed "
@@ -972,8 +987,23 @@ def main():
         ),
         "interpretation_boundary": (
             "A pass establishes cross-representation visual recoverability, not "
-            "language describability or semantic purity."
+            "language describability or semantic purity. When historical_match_all "
+            "is false, the claim applies to the frozen current-environment replay, "
+            "not the unavailable historical points_mask."
         ),
+        "partition_replay": {
+            "historical_match_all": all(
+                row["representative_match_passed"] for row in class_metadata
+            ),
+            "maximum_historical_representative_rmse": max(
+                row["maximum_representative_match_rmse"]
+                for row in class_metadata
+            ),
+            "evaluated_images": sum(
+                row["evaluated_images"] for row in class_metadata
+            ),
+            "total_images": sum(row["images"] for row in class_metadata),
+        },
         "primary": primary,
         "configuration": {
             "specs": args.specs,

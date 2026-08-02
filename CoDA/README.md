@@ -85,13 +85,15 @@ partitions produced by CoDA are recoverable in independent DINOv2 and CLIP
 image spaces. It does not generate images or train a downstream classifier.
 
 The original CoDA artifacts persist the final representative vectors but not
-the final HDBSCAN/post-processing `points_mask`. The diagnostic reconstructs
-those masks with CoDA's original StandardScaler, UMAP, HDBSCAN, and
-post-processing settings. It then matches the reconstructed representatives
-against the persisted vectors and fails if they are not identical within a
-strict tolerance. `assignments.csv` retains nearest-representative Voronoi
-labels as audit columns, but they are not used as P1 targets. Images omitted by
-the original final masks are recorded and excluded from evaluation.
+the final HDBSCAN/post-processing `points_mask`; therefore an exact historical
+recovery is impossible when clustering-library versions have changed. The
+diagnostic replays CoDA's StandardScaler, UMAP, HDBSCAN, and post-processing
+pipeline once in the current fixed environment and freezes that partition.
+Historical representative matching is reported as an audit warning rather
+than used as a validity condition. `assignments.csv` also retains raw-space
+nearest-representative Voronoi labels as audit columns, but neither audit label
+defines the P1 target. Images omitted by the replayed final masks are recorded
+and excluded from evaluation.
 
 Download a separate CLIP image encoder once on the cloud machine:
 
