@@ -164,6 +164,66 @@ Macro-F1 gain with one-sided permutation `p <= 0.05`. A pass establishes
 cross-representation visual recoverability, not language describability or
 semantic purity.
 
+## P2/P3 language-cluster alignment diagnostic
+
+After P1, `diagnose_language_cluster_alignment.py` tests whether the frozen
+replay clusters are represented in the existing language pipeline. It reuses:
+
+- `assignments.csv` and the normalized CLIP image features from the completed
+  P1 run;
+- existing `captions.rank*.jsonl` LLaVA shards under
+  `results/dcs_caption_cache/{imageA,imageB,imageC}/vlcp_dcs_class_aware/`;
+- the same independent CLIP ViT-L/14 model used by P1.
+
+It does not call LLaVA, SDXL, or a downstream classifier. First, per-image
+caption embeddings are evaluated for held-out cluster-ID recovery against an
+exact-occupancy random-partition null. Second, the VLCP DCS selection rule is
+rerun over the replay assignments. Each selected DCS summary is matched to the
+CLIP visual centroid computed from all available P1 images in that cluster.
+Within-class text-to-image and image-to-text Top-1, MRR, cosine margin, and a
+permuted-correspondence null are reported.
+
+Run the three subsets with one GPU:
+
+```bash
+cd /linxi/T2I_DD/CoDA
+
+CUDA_VISIBLE_DEVICES=0 \
+P1_RUN_ID=p1_cluster_recoverability_v0 \
+P2P3_RUN_ID=p2p3_language_cluster_v0 \
+bash scripts/p2p3_language_cluster_alignment.sh
+```
+
+Resume an interrupted text-embedding or CPU evaluation stage with:
+
+```bash
+RESUME=true \
+P1_RUN_ID=p1_cluster_recoverability_v0 \
+P2P3_RUN_ID=p2p3_language_cluster_v0 \
+bash scripts/p2p3_language_cluster_alignment.sh
+```
+
+Outputs are isolated under:
+
+```text
+results/p2p3_language_cluster_runs/<RUN_ID>/
+  feature_cache/clip_text.npz
+  caption_coverage_by_cluster.csv
+  replayed_dcs_summaries.json
+  text_recoverability_{per_class,aggregate,null}.csv
+  dcs_correspondence_{per_class,aggregate}.csv
+  dcs_similarity_matrices.csv
+  language_cluster_alignment.png
+  summary.json
+  complete.json
+```
+
+The primary language-recoverability statistic is combined nearest-centroid
+Macro-F1. The primary DCS-correspondence statistic is bidirectional MRR. A
+positive result establishes that the existing caption/DCS pipeline carries
+cluster identity; it does not yet establish that a diffusion model executes
+that identity or improves downstream training.
+
 ## Model download validation
 
 `MODEL_FOLDER` must contain complete Diffusers repositories at
