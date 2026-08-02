@@ -81,16 +81,17 @@ in `trained_results/.../coda_baseline-*` and `trained_results/.../vlm_caption-*`
 ## P1 cluster recoverability diagnostic
 
 `diagnose_cluster_recoverability.py` tests whether the fixed SDXL-VAE
-partitions used by the DCS transfer are recoverable in independent DINOv2 and
-CLIP image spaces. It does not generate images, rerun clustering, or train a
-downstream classifier.
+partitions produced by CoDA are recoverable in independent DINOv2 and CLIP
+image spaces. It does not generate images or train a downstream classifier.
 
 The original CoDA artifacts persist the final representative vectors but not
-the final HDBSCAN/post-processing `points_mask`. Therefore, this diagnostic
-uses the exact correspondence used by `dcs_caption.py`: every real image is
-assigned to its nearest saved representative in the original flattened
-SDXL-VAE latent space. The assignment is frozen before either independent
-encoder is evaluated.
+the final HDBSCAN/post-processing `points_mask`. The diagnostic reconstructs
+those masks with CoDA's original StandardScaler, UMAP, HDBSCAN, and
+post-processing settings. It then matches the reconstructed representatives
+against the persisted vectors and fails if they are not identical within a
+strict tolerance. `assignments.csv` retains nearest-representative Voronoi
+labels as audit columns, but they are not used as P1 targets. Images omitted by
+the original final masks are recorded and excluded from evaluation.
 
 Download a separate CLIP image encoder once on the cloud machine:
 
@@ -119,7 +120,9 @@ bash scripts/p1_cluster_recoverability.sh
 ```
 
 Feature extraction is cached independently for DINO and CLIP. Resume an
-interrupted run without recomputing a completed encoder:
+interrupted run without recomputing a completed encoder. This also reuses the
+DINO cache created by the earlier failed Voronoi-label run because image order
+and encoder inputs are unchanged:
 
 ```bash
 RESUME=true P1_RUN_ID=p1_cluster_recoverability_v0 \
@@ -140,6 +143,7 @@ Outputs are isolated under:
 results/p1_cluster_recoverability_runs/<RUN_ID>/
   assignments.csv
   partition_manifest.json
+  partition_cache.pkl
   feature_cache/{dino,clip}.npz
   per_class_metrics.csv
   aggregate_metrics.csv

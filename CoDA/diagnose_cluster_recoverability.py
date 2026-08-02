@@ -1,9 +1,11 @@
 """Diagnose whether CoDA SDXL-VAE partitions transfer to independent encoders.
 
-The fixed target labels are the nearest-saved-representative assignments used
-by the CoDA DCS transfer code. The script never reclusters the data. It asks
-whether DINOv2 and CLIP image features can predict those labels better than
-random partitions with exactly matched per-cluster occupancy.
+CoDA persists the final representatives but not the final post-processing
+``points_mask``. This script deterministically reconstructs those masks with
+the original StandardScaler -> UMAP -> HDBSCAN -> CoDA post-processing path,
+then verifies them by matching their representative images to the persisted
+representatives. DINOv2 and CLIP are evaluated against exact-occupancy random
+partitions of the same images.
 """
 
 import argparse
@@ -22,14 +24,18 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import hdbscan
 from PIL import Image
+from scipy.optimize import linear_sum_assignment
 from sklearn.linear_model import RidgeClassifier
 from sklearn.metrics import accuracy_score, f1_score, recall_score
 from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+from umap import UMAP
 
 from dcs_caption import _flat_features, _load_pickle, load_class_info
+from postprocess import hdbscan_post
 
 
 METRICS = ("top1", "macro_f1", "balanced_accuracy")
@@ -49,6 +55,11 @@ def parse_args():
         default="10_n_85_s_55_saved_clusters.pkl",
     )
     parser.add_argument("--ipc", type=int, default=10)
+    parser.add_argument("--n-neighbors", type=int, default=85)
+    parser.add_argument("--min-cluster-size", type=int, default=55)
+    parser.add_argument("--min-samples", type=int, default=3)
+    parser.add_argument("--num-seed-candidates", type=int, default=3)
+    parser.add_argument("--representative-match-rmse", type=float, default=1e-6)
     parser.add_argument("--nclass", type=int, default=10)
     parser.add_argument("--phase", type=int, default=0)
     parser.add_argument("--dino-model", required=True)
@@ -92,6 +103,191 @@ def write_csv(path, rows, fieldnames=None):
 def center_path(cluster_dir, base_name, chunk_id):
     base, extension = os.path.splitext(base_name)
     return cluster_dir / f"{base}_{chunk_id}{extension}"
+
+
+def partition_signature(args):
+    digest = hashlib.sha256()
+    digest.update(b"p1_original_coda_partition_v2")
+    configuration = {
+        "specs": args.specs,
+        "features_cache_name": args.features_cache_name,
+        "saved_clusters_base_name": args.saved_clusters_base_name,
+        "ipc": args.ipc,
+        "nclass": args.nclass,
+        "phase": args.phase,
+        "n_neighbors": args.n_neighbors,
+        "min_cluster_size": args.min_cluster_size,
+        "min_samples": args.min_samples,
+        "num_seed_candidates": args.num_seed_candidates,
+        "representative_match_rmse": args.representative_match_rmse,
+    }
+    digest.update(json.dumps(configuration, sort_keys=True).encode("utf-8"))
+    artifact_paths = []
+    for spec in args.specs:
+        cluster_dir = Path(args.cluster_root) / spec
+        artifact_paths.extend(sorted(cluster_dir.glob(f"{args.features_cache_name}_*")))
+        base, extension = os.path.splitext(args.saved_clusters_base_name)
+        artifact_paths.extend(sorted(cluster_dir.glob(f"{base}_*{extension}")))
+    for path in artifact_paths:
+        stat = path.stat()
+        digest.update(str(path.resolve()).encode("utf-8"))
+        digest.update(str(stat.st_size).encode("ascii"))
+        digest.update(str(stat.st_mtime_ns).encode("ascii"))
+    return digest.hexdigest()
+
+
+def load_or_reconstruct_partition(args, output_dir):
+    cache_path = output_dir / "partition_cache.pkl"
+    signature = partition_signature(args)
+    if cache_path.is_file():
+        with cache_path.open("rb") as handle:
+            cached = pickle.load(handle)
+        if cached.get("signature") != signature:
+            raise RuntimeError(
+                f"Partition cache inputs changed: {cache_path}. Use a new run ID."
+            )
+        print(f"Reusing reconstructed CoDA partition: {cache_path}")
+        return cached["samples"], cached["class_metadata"]
+
+    samples, class_metadata = load_partition(args)
+    temporary = cache_path.with_suffix(cache_path.suffix + ".tmp")
+    with temporary.open("wb") as handle:
+        pickle.dump(
+            {
+                "signature": signature,
+                "samples": samples,
+                "class_metadata": class_metadata,
+            },
+            handle,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+    os.replace(temporary, cache_path)
+    return samples, class_metadata
+
+
+def reconstruct_class_partition(args, features, saved_centers, class_key):
+    args.IPC = args.ipc
+    args.cluster_detial = False
+    args.cluster_logger = False
+    scaler = StandardScaler()
+    processed = UMAP(
+        n_components=50,
+        n_neighbors=args.n_neighbors,
+        min_dist=0.0,
+        random_state=42,
+    ).fit_transform(scaler.fit_transform(features))
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=args.min_cluster_size,
+        min_samples=args.min_samples,
+        prediction_data=True,
+    )
+    labels = clusterer.fit_predict(processed)
+    cluster_count = len(np.unique(labels)) - (1 if -1 in labels else 0)
+    if cluster_count == 0:
+        raise ValueError(f"HDBSCAN reconstructed no clusters for {class_key}")
+
+    initial_centers = []
+    initial_indices = {}
+    for cluster_id in range(cluster_count):
+        mask = labels == cluster_id
+        global_indices = np.flatnonzero(mask)
+        local_index = int(np.argmax(clusterer.probabilities_[mask]))
+        global_index = int(global_indices[local_index])
+        initial_indices[cluster_id] = global_index
+        initial_centers.append(processed[global_index])
+
+    # hdbscan_post mutates next_new_id, so the main argparse namespace is safe:
+    # each class resets it from the newly reconstructed HDBSCAN cluster count.
+    final_clusters = hdbscan_post(
+        args,
+        cluster_count,
+        initial_centers,
+        labels,
+        processed,
+        "",
+        clusterer,
+    )
+    if len(final_clusters) != args.ipc:
+        raise ValueError(
+            f"Expected {args.ipc} reconstructed clusters for {class_key}, "
+            f"found {len(final_clusters)}"
+        )
+
+    reconstructed = []
+    for cluster_id, cluster_info in final_clusters.items():
+        mask = np.asarray(cluster_info["points_mask"], dtype=bool)
+        if not np.any(mask):
+            raise ValueError(f"Empty reconstructed cluster {cluster_id} in {class_key}")
+        if cluster_info.get("origin") == "hdbscan_initial":
+            representative_index = initial_indices[cluster_id]
+        else:
+            member_indices = np.flatnonzero(mask)
+            center = np.asarray(cluster_info["center"])
+            local_index = int(
+                np.argmin(np.sum((processed[member_indices] - center) ** 2, axis=1))
+            )
+            representative_index = int(member_indices[local_index])
+        reconstructed.append(
+            {
+                "internal_cluster_id": int(cluster_id),
+                "mask": mask,
+                "representative_index": representative_index,
+                "representative": features[representative_index],
+                "origin": cluster_info.get("origin", "unknown"),
+            }
+        )
+
+    reconstructed_centers = np.stack(
+        [cluster["representative"] for cluster in reconstructed]
+    )
+    mean_squared = np.mean(
+        (reconstructed_centers[:, None, :] - saved_centers[None, :, :]) ** 2,
+        axis=2,
+    )
+    rows, columns = linear_sum_assignment(mean_squared)
+    matched_rmse = np.sqrt(mean_squared[rows, columns])
+    maximum_match_rmse = float(matched_rmse.max())
+    if maximum_match_rmse > args.representative_match_rmse:
+        raise RuntimeError(
+            f"Reconstructed representatives do not match persisted centers for "
+            f"{class_key}: max RMSE={maximum_match_rmse:.8g}, allowed="
+            f"{args.representative_match_rmse:.8g}. Check clustering parameters "
+            "or library versions."
+        )
+
+    reconstructed_to_saved = {
+        int(row): int(column) for row, column in zip(rows, columns)
+    }
+    assignments = np.full(len(features), -1, dtype=np.int64)
+    origins = {}
+    representative_indices = {}
+    for reconstructed_index, cluster in enumerate(reconstructed):
+        saved_index = reconstructed_to_saved[reconstructed_index]
+        if np.any(assignments[cluster["mask"]] >= 0):
+            raise RuntimeError(f"Overlapping reconstructed masks in {class_key}")
+        assignments[cluster["mask"]] = saved_index
+        origins[saved_index] = cluster["origin"]
+        representative_indices[saved_index] = cluster["representative_index"]
+
+    counts = np.bincount(assignments[assignments >= 0], minlength=args.ipc)
+    if np.any(counts == 0):
+        raise RuntimeError(
+            f"Empty original CoDA clusters after reconstruction for {class_key}: "
+            f"{np.flatnonzero(counts == 0).tolist()}"
+        )
+    return assignments, {
+        "cluster_counts": counts.tolist(),
+        "assigned_images": int(np.sum(assignments >= 0)),
+        "unassigned_images": int(np.sum(assignments < 0)),
+        "coverage_fraction": float(np.mean(assignments >= 0)),
+        "initial_hdbscan_clusters": int(cluster_count),
+        "maximum_representative_match_rmse": maximum_match_rmse,
+        "representative_match_rmse": matched_rmse.tolist(),
+        "cluster_origins": [origins[index] for index in range(args.ipc)],
+        "representative_source_indices": [
+            representative_indices[index] for index in range(args.ipc)
+        ],
+    }
 
 
 def load_partition(args):
@@ -144,15 +340,19 @@ def load_partition(args):
                 + np.sum(centers * centers, axis=1)[None, :]
                 - 2.0 * features @ centers.T
             )
-            assignments = np.argmin(distances, axis=1).astype(np.int64)
-            counts = np.bincount(assignments, minlength=args.ipc)
-            if np.any(counts == 0):
-                empty = np.flatnonzero(counts == 0).tolist()
-                raise ValueError(
-                    f"Empty nearest-representative clusters for {spec}/{class_id}: {empty}"
-                )
-
             class_key = f"{spec}:{class_id}"
+            voronoi_assignments = np.argmin(distances, axis=1).astype(np.int64)
+            print(f"Reconstructing original CoDA masks: {class_key}", flush=True)
+            assignments, reconstruction = reconstruct_class_partition(
+                args, features, centers, class_key
+            )
+            counts = np.asarray(reconstruction["cluster_counts"], dtype=np.int64)
+            print(
+                f"  verified representatives; coverage="
+                f"{reconstruction['assigned_images']}/{len(paths)}, "
+                f"cluster sizes={counts.tolist()}",
+                flush=True,
+            )
             class_metadata.append(
                 {
                     "class_key": class_key,
@@ -161,9 +361,28 @@ def load_partition(args):
                     "class_name": class_names[class_id],
                     "local_label": local_label,
                     "images": len(paths),
+                    "evaluated_images": reconstruction["assigned_images"],
+                    "unassigned_images": reconstruction["unassigned_images"],
+                    "coverage_fraction": reconstruction["coverage_fraction"],
                     "cluster_counts": counts.tolist(),
+                    "voronoi_cluster_counts": np.bincount(
+                        voronoi_assignments, minlength=args.ipc
+                    ).tolist(),
                     "minimum_cluster_size": int(counts.min()),
                     "maximum_cluster_size": int(counts.max()),
+                    "initial_hdbscan_clusters": reconstruction[
+                        "initial_hdbscan_clusters"
+                    ],
+                    "maximum_representative_match_rmse": reconstruction[
+                        "maximum_representative_match_rmse"
+                    ],
+                    "representative_match_rmse": reconstruction[
+                        "representative_match_rmse"
+                    ],
+                    "cluster_origins": reconstruction["cluster_origins"],
+                    "representative_source_indices": reconstruction[
+                        "representative_source_indices"
+                    ],
                 }
             )
             for index, image_path in enumerate(paths):
@@ -177,8 +396,10 @@ def load_partition(args):
                         "class_name": class_names[class_id],
                         "local_label": local_label,
                         "cluster_id": cluster_id,
+                        "included_in_original_partition": cluster_id >= 0,
+                        "voronoi_cluster_id": int(voronoi_assignments[index]),
                         "distance_sq_to_representative": float(
-                            max(distances[index, cluster_id], 0.0)
+                            max(distances[index, voronoi_assignments[index]], 0.0)
                         ),
                         "path": str(Path(image_path).resolve()),
                     }
@@ -405,13 +626,19 @@ def evaluate_class(
     null_metrics = []
     for null_index in range(null_partitions):
         random_labels = matched_random_labels(labels, rng)
+        null_splitter = StratifiedKFold(
+            n_splits=n_splits,
+            shuffle=True,
+            random_state=class_seed(base_seed + 2 + null_index, class_key),
+        )
+        null_folds = list(null_splitter.split(features, random_labels))
         classifiers = ["nearest_centroid"]
         if null_index < linear_null_partitions:
             classifiers.append("linear_probe")
         metrics = evaluate_labels(
             features,
             random_labels,
-            folds,
+            null_folds,
             all_labels,
             ridge_alpha,
             classifiers=tuple(classifiers),
@@ -604,7 +831,7 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    samples, class_metadata = load_partition(args)
+    samples, class_metadata = load_or_reconstruct_partition(args, output_dir)
     assignment_rows = [
         {
             key: sample[key]
@@ -616,6 +843,8 @@ def main():
                 "class_name",
                 "local_label",
                 "cluster_id",
+                "included_in_original_partition",
+                "voronoi_cluster_id",
                 "distance_sq_to_representative",
                 "path",
             )
@@ -626,17 +855,30 @@ def main():
     atomic_json(
         output_dir / "partition_manifest.json",
         {
-            "format_version": 1,
+            "format_version": 2,
             "assignment_definition": (
-                "nearest saved CoDA representative in original flattened SDXL-VAE "
-                "latent space; identical to the DCS transfer correspondence"
+                "original CoDA final points_mask reconstructed with StandardScaler, "
+                "UMAP, HDBSCAN, and hdbscan_post; cluster IDs are mapped to persisted "
+                "representatives by minimum-cost exact feature matching"
             ),
-            "not_available_from_original_artifacts": (
-                "final HDBSCAN/post-processing points_mask was not persisted"
+            "audit_assignment": (
+                "voronoi_cluster_id is the nearest persisted representative in raw "
+                "flattened SDXL-VAE space and is not used as the P1 target"
             ),
             "specs": args.specs,
             "ipc": args.ipc,
+            "clustering": {
+                "n_neighbors": args.n_neighbors,
+                "min_cluster_size": args.min_cluster_size,
+                "min_samples": args.min_samples,
+                "num_seed_candidates": args.num_seed_candidates,
+                "umap_random_state": 42,
+                "representative_match_rmse_tolerance": args.representative_match_rmse,
+            },
             "images": len(samples),
+            "evaluated_images": int(
+                sum(sample["included_in_original_partition"] for sample in samples)
+            ),
             "classes": class_metadata,
         },
     )
@@ -645,6 +887,8 @@ def main():
     indices_by_class = defaultdict(list)
     metadata_by_class = {}
     for sample in samples:
+        if not sample["included_in_original_partition"]:
+            continue
         key = sample["class_key"]
         indices_by_class[key].append(sample["sample_index"])
         labels_by_class[key].append(sample["cluster_id"])

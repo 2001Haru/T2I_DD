@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
@@ -48,7 +49,7 @@ class ClusterRecoverabilityTest(unittest.TestCase):
         self.assertGreater(true_value, 0.95)
         self.assertGreater(true_value - null_mean, 0.4)
 
-    def test_partition_matches_nearest_saved_representative(self):
+    def test_partition_uses_reconstructed_masks_and_keeps_voronoi_audit(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             misc = root / "misc"
@@ -90,9 +91,34 @@ class ClusterRecoverabilityTest(unittest.TestCase):
                 saved_clusters_base_name="centers.pkl",
                 ipc=2,
             )
-            samples, metadata = load_partition(args)
-            self.assertEqual([row["cluster_id"] for row in samples], [0, 0, 1, 1])
-            self.assertEqual(metadata[0]["cluster_counts"], [2, 2])
+            reconstruction = np.asarray([1, 1, 0, -1], dtype=np.int64)
+            audit = {
+                "cluster_counts": [1, 2],
+                "assigned_images": 3,
+                "unassigned_images": 1,
+                "coverage_fraction": 0.75,
+                "initial_hdbscan_clusters": 2,
+                "maximum_representative_match_rmse": 0.0,
+                "representative_match_rmse": [0.0, 0.0],
+                "cluster_origins": ["hdbscan_initial", "hdbscan_initial"],
+                "representative_source_indices": [2, 0],
+            }
+            with patch(
+                "diagnose_cluster_recoverability.reconstruct_class_partition",
+                return_value=(reconstruction, audit),
+            ):
+                samples, metadata = load_partition(args)
+            self.assertEqual([row["cluster_id"] for row in samples], [1, 1, 0, -1])
+            self.assertEqual(
+                [row["voronoi_cluster_id"] for row in samples], [0, 0, 1, 1]
+            )
+            self.assertEqual(
+                [row["included_in_original_partition"] for row in samples],
+                [True, True, True, False],
+            )
+            self.assertEqual(metadata[0]["cluster_counts"], [1, 2])
+            self.assertEqual(metadata[0]["voronoi_cluster_counts"], [2, 2])
+            self.assertEqual(metadata[0]["unassigned_images"], 1)
 
 
 if __name__ == "__main__":

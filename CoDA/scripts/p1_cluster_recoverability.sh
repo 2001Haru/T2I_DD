@@ -102,6 +102,8 @@ ARGS=(
     --cluster-root ./results/clusterfile
     --saved-clusters-base-name "$SAVED_CLUSTERS"
     --ipc "$IPC"
+    --n-neighbors "$N_NEIGHBORS"
+    --min-cluster-size "$MIN_CLUSTER_SIZE"
     --dino-model "$DINO_MODEL"
     --clip-model "$CLIP_MODEL"
     --output-dir "$OUTPUT_DIR"
