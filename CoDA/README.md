@@ -78,6 +78,82 @@ comparison that reports caption time relative to baseline generation time.
 Downstream checkpoints and logs are isolated under method-specific directories
 in `trained_results/.../coda_baseline-*` and `trained_results/.../vlm_caption-*`.
 
+## P1 cluster recoverability diagnostic
+
+`diagnose_cluster_recoverability.py` tests whether the fixed SDXL-VAE
+partitions used by the DCS transfer are recoverable in independent DINOv2 and
+CLIP image spaces. It does not generate images, rerun clustering, or train a
+downstream classifier.
+
+The original CoDA artifacts persist the final representative vectors but not
+the final HDBSCAN/post-processing `points_mask`. Therefore, this diagnostic
+uses the exact correspondence used by `dcs_caption.py`: every real image is
+assigned to its nearest saved representative in the original flattened
+SDXL-VAE latent space. The assignment is frozen before either independent
+encoder is evaluated.
+
+Download a separate CLIP image encoder once on the cloud machine:
+
+```bash
+python - <<'PY'
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="openai/clip-vit-large-patch14",
+    local_dir="/linxi/models/CLIP/clip-vit-large-patch14",
+)
+PY
+```
+
+The existing local DINOv2 checkpoint can be reused. Run all three fixed
+ImageNet subsets with one visible GPU:
+
+```bash
+cd /linxi/T2I_DD/CoDA
+
+CUDA_VISIBLE_DEVICES=0 \
+DINO_MODEL=/linxi/models/DINOv2/dinov2-base \
+CLIP_MODEL=/linxi/models/CLIP/clip-vit-large-patch14 \
+P1_RUN_ID=p1_cluster_recoverability_v0 \
+bash scripts/p1_cluster_recoverability.sh
+```
+
+Feature extraction is cached independently for DINO and CLIP. Resume an
+interrupted run without recomputing a completed encoder:
+
+```bash
+RESUME=true P1_RUN_ID=p1_cluster_recoverability_v0 \
+bash scripts/p1_cluster_recoverability.sh
+```
+
+For each semantic class, the script runs fixed-fold linear-probe and
+nearest-centroid evaluation. Each null partition is made by permuting the real
+cluster IDs, which preserves every cluster's occupancy exactly. Defaults are
+five folds, 100 matched-random partitions for nearest-centroid, and the first
+20 matched partitions for the more expensive ridge linear probe. The primary
+pre-registered statistic is combined nearest-centroid Macro-F1 relative to its
+100-partition matched-random null; the linear probe is a supporting check.
+
+Outputs are isolated under:
+
+```text
+results/p1_cluster_recoverability_runs/<RUN_ID>/
+  assignments.csv
+  partition_manifest.json
+  feature_cache/{dino,clip}.npz
+  per_class_metrics.csv
+  aggregate_metrics.csv
+  matched_random_metrics.csv
+  cluster_recoverability.png
+  summary.json
+  complete.json
+```
+
+`summary.json` reports `pass` only when both encoders have positive aggregate
+Macro-F1 gain with one-sided permutation `p <= 0.05`. A pass establishes
+cross-representation visual recoverability, not language describability or
+semantic purity.
+
 ## Model download validation
 
 `MODEL_FOLDER` must contain complete Diffusers repositories at
