@@ -2,6 +2,7 @@
 import os
 import argparse
 import copy
+import json
 import pickle
 from time import perf_counter
 
@@ -284,9 +285,65 @@ def main(args):
         args._class_labels = class_labels
         args._sel_classes = sel_classes
         args._class_id_to_name = class_id_to_name
+        args._generation_cluster_indices = None
+        if args.generation_cluster_indices_file:
+            with open(args.generation_cluster_indices_file, "r", encoding="utf-8") as file:
+                generation_indices = json.load(file)
+            normalized_indices = {}
+            for class_id in sel_classes:
+                values = generation_indices.get(class_id)
+                if not isinstance(values, list) or not values:
+                    raise ValueError(
+                        f"Missing non-empty generation cluster list for {class_id}."
+                    )
+                indices = sorted({int(value) for value in values})
+                if indices[0] < 0 or indices[-1] >= args.IPC:
+                    raise ValueError(
+                        f"Generation cluster indices out of range for {class_id}: {indices}"
+                    )
+                normalized_indices[class_id] = indices
+            args._generation_cluster_indices = normalized_indices
+
+        args._cluster_caption_source_map = None
+        if args.cluster_caption_source_map:
+            with open(args.cluster_caption_source_map, "r", encoding="utf-8") as file:
+                source_map = json.load(file)
+            normalized_source_map = {}
+            required_indices = args._generation_cluster_indices or {
+                class_id: list(range(args.IPC)) for class_id in sel_classes
+            }
+            for class_id in sel_classes:
+                class_map = source_map.get(class_id)
+                if not isinstance(class_map, dict):
+                    raise ValueError(f"Missing caption-source map for {class_id}.")
+                normalized_source_map[class_id] = {}
+                for cluster_id in required_indices[class_id]:
+                    source = int(class_map[str(cluster_id)])
+                    if source < 0 or source >= args.IPC:
+                        raise ValueError(
+                            f"Caption source out of range for {class_id}/{cluster_id}: {source}"
+                        )
+                    normalized_source_map[class_id][str(cluster_id)] = source
+            args._cluster_caption_source_map = normalized_source_map
         if args.use_cluster_captions:
+            generated_indices = args._generation_cluster_indices or {
+                class_id: list(range(args.IPC)) for class_id in sel_classes
+            }
+            required_caption_indices = {}
+            for class_id, indices in generated_indices.items():
+                sources = set()
+                for cluster_id in indices:
+                    if args._cluster_caption_source_map is not None:
+                        source = args._cluster_caption_source_map[class_id][str(cluster_id)]
+                    else:
+                        source = (cluster_id + args.cluster_caption_shift) % args.IPC
+                    sources.add(source)
+                required_caption_indices[class_id] = sorted(sources)
             args._cluster_captions = load_cluster_captions(
-                args.cluster_caption_file, sel_classes, args.IPC
+                args.cluster_caption_file,
+                sel_classes,
+                args.IPC,
+                required_indices=required_caption_indices,
             )
 
         num_gpus = torch.cuda.device_count()
@@ -361,6 +418,18 @@ def get_args():
         help="Maximum number of newly generated LLaVA caption tokens."
     )
     parser.add_argument(
+        "--cluster_caption_shift", type=int, default=0,
+        help="Cyclic within-class caption-source shift used for controlled shuffling."
+    )
+    parser.add_argument(
+        "--cluster_caption_source_map", type=str, default=None,
+        help="Optional JSON mapping class ID and visual cluster ID to caption cluster ID."
+    )
+    parser.add_argument(
+        "--generation_cluster_indices_file", type=str, default=None,
+        help="Optional JSON mapping class IDs to the cluster indices generated in every condition."
+    )
+    parser.add_argument(
         "--cluster_caption_max_words", type=int, default=35,
         help="Maximum words retained in a normalized caption before constructing the SDXL prompt."
     )
@@ -411,6 +480,13 @@ def get_args():
     parser.add_argument("--cfg_guidance_scale",  type=float, default=5.0, help="Standard cfg guidance scale")
     parser.add_argument("--CoDA_guidance_scale", type=float, default=0.1, help="CoDA guidance scale, AKA gamma")
     parser.add_argument(
+        "--prototype_initialization_strength", type=float, default=None,
+        help=(
+            "Optional img2img-style prototype initialization strength in (0, 1]. "
+            "The representative is noised with the same sampled noise used by the pure-noise control."
+        ),
+    )
+    parser.add_argument(
         "--conflict_projection_alpha", type=float, default=0.0,
         help="Fraction of the conflicting image-guidance component to remove (0 to 1)."
     )
@@ -429,6 +505,11 @@ def get_args():
         parser.error(
             "--conflict_projection_alpha and --conflict_projection_kappa_cap are mutually exclusive."
         )
+    if (
+        args.prototype_initialization_strength is not None
+        and not 0.0 < args.prototype_initialization_strength <= 1.0
+    ):
+        parser.error("--prototype_initialization_strength must be in (0, 1].")
 
     ############################################
     # postprocess the args
@@ -468,6 +549,13 @@ def get_args():
             raise ValueError(
                 "--cluster_caption_prompt_template must contain " + ", ".join(missing_template_fields)
             )
+    for option_name in (
+        "cluster_caption_source_map",
+        "generation_cluster_indices_file",
+    ):
+        option_path = getattr(args, option_name)
+        if option_path is not None and not os.path.isfile(option_path):
+            parser.error(f"--{option_name} does not exist: {option_path}")
     try:
         args.base_prompt_template.format(class_name="example")
     except (KeyError, ValueError) as error:

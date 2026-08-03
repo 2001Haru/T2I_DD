@@ -89,6 +89,7 @@ class CoDA_SDXL(StableDiffusionXLPipeline):
 
             # CoDA Custom Parameters
             represent_latent: torch.Tensor = None,
+            prototype_initialization_strength: Optional[float] = None,
             guideTPercent: float = 0.5,
             CoDA_guidance_scale: float = 0.1,
             conflict_projection_alpha: float = 0.0,
@@ -148,12 +149,38 @@ class CoDA_SDXL(StableDiffusionXLPipeline):
             self.scheduler, num_inference_steps, device, timesteps, sigmas
         )
 
+        if prototype_initialization_strength is not None:
+            if represent_latent is None:
+                raise ValueError(
+                    "prototype_initialization_strength requires represent_latent"
+                )
+            if not 0.0 < prototype_initialization_strength <= 1.0:
+                raise ValueError(
+                    "prototype_initialization_strength must be in (0, 1]"
+                )
+
         # 5. Prepare latent variables
         num_channels_latents = self.unet.config.in_channels
         latents = self.prepare_latents(
             batch_size * num_images_per_prompt, num_channels_latents, height, width,
             prompt_embeds.dtype, device, generator, latents,
         )
+
+        if prototype_initialization_strength is not None:
+            represent_latent = represent_latent.to(
+                device=latents.device, dtype=latents.dtype
+            )
+            denoising_steps = max(
+                1, int(len(timesteps) * prototype_initialization_strength)
+            )
+            start_index = len(timesteps) - denoising_steps
+            timesteps = timesteps[start_index:]
+            num_inference_steps = len(timesteps)
+            raw_noise = latents / self.scheduler.init_noise_sigma
+            latent_timestep = timesteps[:1].repeat(batch_size * num_images_per_prompt)
+            latents = self.scheduler.add_noise(
+                represent_latent, raw_noise, latent_timestep
+            )
 
         # 6. Prepare extra step kwargs.
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)

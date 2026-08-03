@@ -39,7 +39,7 @@ def _write_json(path, payload):
     os.replace(tmp_path, path)
 
 
-def load_cluster_captions(path, sel_classes, ipc):
+def load_cluster_captions(path, sel_classes, ipc, required_indices=None):
     """Load and validate captions for every representative image used by CoDA."""
     if not os.path.isfile(path):
         raise FileNotFoundError(
@@ -60,7 +60,12 @@ def load_cluster_captions(path, sel_classes, ipc):
         if not isinstance(class_captions, dict):
             missing.append(f"{class_id}/*")
             continue
-        for shift in range(ipc):
+        class_indices = (
+            required_indices[class_id]
+            if required_indices is not None
+            else range(ipc)
+        )
+        for shift in class_indices:
             caption = class_captions.get(str(shift))
             if not isinstance(caption, str) or not caption.strip():
                 missing.append(f"{class_id}/{shift}")

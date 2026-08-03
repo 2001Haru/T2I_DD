@@ -72,15 +72,29 @@ def _fit_caption_to_clip(args, pipeline, class_name, caption):
     return render(fitted_caption)
 
 
+def _caption_source_index(args, class_id, shift):
+    source_map = getattr(args, "_cluster_caption_source_map", None)
+    if source_map is not None:
+        try:
+            return int(source_map[class_id][str(shift)])
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError(
+                f"Missing caption-source mapping for {class_id}/{shift}."
+            ) from error
+    return (shift + getattr(args, "cluster_caption_shift", 0)) % args.IPC
+
+
 def _build_generation_prompt(args, class_id, class_name, shift, pipeline=None):
     if not args.use_cluster_captions:
         return args.base_prompt_template.format(class_name=class_name).strip()
 
+    caption_source = _caption_source_index(args, class_id, shift)
     try:
-        caption = args._cluster_captions[class_id][str(shift)].strip()
+        caption = args._cluster_captions[class_id][str(caption_source)].strip()
     except (AttributeError, KeyError) as error:
         raise ValueError(
-            f"Missing cluster caption for representative image {class_id}/{shift}."
+            f"Missing cluster caption for source {class_id}/{caption_source} "
+            f"used by visual cluster {shift}."
         ) from error
 
     if pipeline is not None:
@@ -102,6 +116,16 @@ def _write_prompt_config(args):
         ),
         "caption_file": os.path.basename(args.cluster_caption_file) if args.use_cluster_captions else None,
         "caption_model": args.cluster_caption_model_path if args.use_cluster_captions else None,
+        "caption_shift": args.cluster_caption_shift if args.use_cluster_captions else None,
+        "caption_source_map": (
+            os.path.basename(args.cluster_caption_source_map)
+            if args.use_cluster_captions and args.cluster_caption_source_map else None
+        ),
+        "generation_cluster_indices": (
+            os.path.basename(args.generation_cluster_indices_file)
+            if args.generation_cluster_indices_file else None
+        ),
+        "prototype_initialization_strength": args.prototype_initialization_strength,
     }
     with open(os.path.join(output_dir, "prompt_config.json"), "w", encoding="utf-8") as file:
         json.dump(config, file, ensure_ascii=False, indent=2)
@@ -180,7 +204,10 @@ def generate_images_single_gpu(gpu_id, args, clusters_centers, my_assignments, r
                     save_path = os.path.join(save_dir_class, f"{shift}.png")
 
                     target_size = (args.size, args.size)
-                    if args.CoDA_guidance_scale > 0.0:
+                    if (
+                        args.CoDA_guidance_scale > 0.0
+                        or args.prototype_initialization_strength is not None
+                    ):
                         represent_latent = torch.tensor(clusters_centers[index][shift].reshape(1, 4, 128, 128))
 
                     with suppress_stdout():
@@ -197,6 +224,11 @@ def generate_images_single_gpu(gpu_id, args, clusters_centers, my_assignments, r
                                 "class_id": sel_class,
                                 "class_name": first_class_name,
                                 "sample_index": shift,
+                                "visual_cluster_id": shift,
+                                "caption_cluster_id": (
+                                    _caption_source_index(args, sel_class, shift)
+                                    if args.use_cluster_captions else None
+                                ),
                                 "image_seed": image_seed,
                                 "prompt": prompt,
                                 "token_counts": _prompt_token_counts(prompt, pipeline),
@@ -233,8 +265,15 @@ def generate_images_single_gpu(gpu_id, args, clusters_centers, my_assignments, r
                                     "conflict_projection_alpha": args.conflict_projection_alpha,
                                     "conflict_projection_kappa_cap": args.conflict_projection_kappa_cap,
                                 }
-                                if args.CoDA_guidance_scale > 0.0:
+                                if (
+                                    args.CoDA_guidance_scale > 0.0
+                                    or args.prototype_initialization_strength is not None
+                                ):
                                     pipeline_kwargs["represent_latent"] = represent_latent
+                                if args.prototype_initialization_strength is not None:
+                                    pipeline_kwargs["prototype_initialization_strength"] = (
+                                        args.prototype_initialization_strength
+                                    )
                                 if args.measure_guidance_conflict:
                                     pipeline_kwargs["guidance_metrics_callback"] = record_guidance_metrics
 
@@ -261,8 +300,15 @@ def generate_images_single_gpu(gpu_id, args, clusters_centers, my_assignments, r
                                     "conflict_projection_kappa_cap": args.conflict_projection_kappa_cap,
                                     "generator": generator
                                 }
-                                if args.CoDA_guidance_scale > 0.0:
+                                if (
+                                    args.CoDA_guidance_scale > 0.0
+                                    or args.prototype_initialization_strength is not None
+                                ):
                                     pipeline_kwargs["represent_latent"] = represent_latent
+                                if args.prototype_initialization_strength is not None:
+                                    pipeline_kwargs["prototype_initialization_strength"] = (
+                                        args.prototype_initialization_strength
+                                    )
                                 if args.measure_guidance_conflict:
                                     pipeline_kwargs["guidance_metrics_callback"] = record_guidance_metrics
                                 pipeline_output, final_latent_from_base = pipeline(**pipeline_kwargs)
@@ -310,7 +356,6 @@ def generate_images_multi_gpu(args, clusters_centers):
     num_gpus = args._num_gpus
     class_labels = args._class_labels
     sel_classes = args._sel_classes
-    num_samples_per_class = args.IPC
 
     _write_prompt_config(args)
 
@@ -321,25 +366,20 @@ def generate_images_multi_gpu(args, clusters_centers):
     for gpu_id in range(num_gpus):
         gpu_assignments[gpu_id] = {}
 
-    extra_task_gpu_offset = 0
-    for class_idx in range(len(class_labels)):
-        images_per_gpu = num_samples_per_class // num_gpus
-        extra_images = num_samples_per_class % num_gpus
-
-        current_shift = 0
+    task_offset = 0
+    selected_indices = getattr(args, "_generation_cluster_indices", None)
+    for class_idx, class_id in enumerate(sel_classes):
+        shifts = (
+            selected_indices[class_id]
+            if selected_indices is not None
+            else list(range(args.IPC))
+        )
         for gpu_id in range(num_gpus):
             gpu_assignments[gpu_id][class_idx] = []
-
-            for _ in range(images_per_gpu):
-                gpu_assignments[gpu_id][class_idx].append(current_shift)
-                current_shift += 1
-
-        for i in range(extra_images):
-            gpu_to_get_extra = (extra_task_gpu_offset + i) % num_gpus
-            gpu_assignments[gpu_to_get_extra][class_idx].append(current_shift)
-            current_shift += 1
-
-        extra_task_gpu_offset = (extra_task_gpu_offset + extra_images) % num_gpus
+        for local_index, shift in enumerate(shifts):
+            gpu_id = (task_offset + local_index) % num_gpus
+            gpu_assignments[gpu_id][class_idx].append(shift)
+        task_offset += len(shifts)
 
     # print("GPU assignments:")
     # for gpu_id, assignments in gpu_assignments.items():
