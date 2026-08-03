@@ -29,7 +29,10 @@ RUN_GENERATION="${RUN_GENERATION:-true}"
 RUN_EVALUATION="${RUN_EVALUATION:-true}"
 RESUME="${RESUME:-false}"
 ARCHIVE_INCOMPLETE_GENERATION="${ARCHIVE_INCOMPLETE_GENERATION:-false}"
-PROMPT_TEMPLATE="${P4_DCS_PROMPT_TEMPLATE:-An natural photo of a {class_name}, {caption}, centered object.}"
+PROMPT_TEMPLATE="${P4_DCS_PROMPT_TEMPLATE:-}"
+if [[ -z "$PROMPT_TEMPLATE" ]]; then
+    PROMPT_TEMPLATE='An natural photo of a {class_name}, {caption}, centered object.'
+fi
 
 P1_RUN_DIR="./results/p1_cluster_recoverability_runs/${P1_RUN_ID}"
 P2P3_RUN_DIR="./results/p2p3_language_cluster_runs/${P2P3_RUN_ID}"
@@ -84,9 +87,23 @@ if [[ -e "$META_ROOT" ]]; then
         echo "P4 run exists; set RESUME=true or choose another P4_RUN_ID: ${RUN_ID}" >&2
         exit 1
     fi
-    if [[ ! -f "$CONFIG_FILE" || "$(<"$CONFIG_FILE")" != "$CONFIG_CONTENT" ]]; then
-        echo "Resume configuration differs from ${CONFIG_FILE}" >&2
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo "Resume configuration is missing: ${CONFIG_FILE}" >&2
         exit 1
+    fi
+    if [[ "$(<"$CONFIG_FILE")" != "$CONFIG_CONTENT" ]]; then
+        # The first P4 script revision used a parameter expansion containing
+        # braces. Bash closed it at {class_name}, producing this one malformed
+        # template before any caption-conditioned image could be generated.
+        LEGACY_PROMPT_TEMPLATE='An natural photo of a {class_name, {caption}, centered object.}'
+        LEGACY_CONFIG_CONTENT="${CONFIG_CONTENT/PROMPT_TEMPLATE=${PROMPT_TEMPLATE}/PROMPT_TEMPLATE=${LEGACY_PROMPT_TEMPLATE}}"
+        if [[ "$(<"$CONFIG_FILE")" == "$LEGACY_CONFIG_CONTENT" ]]; then
+            printf '%s\n' "$CONFIG_CONTENT" > "$CONFIG_FILE"
+            echo "==> Migrated malformed legacy P4 prompt template; completed label outputs remain reusable"
+        else
+            echo "Resume configuration differs from ${CONFIG_FILE}" >&2
+            exit 1
+        fi
     fi
     if [[ -f "$COMPLETE_FILE" ]]; then
         echo "P4 run already complete: ${META_ROOT}"
