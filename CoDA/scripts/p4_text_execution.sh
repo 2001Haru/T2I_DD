@@ -27,6 +27,7 @@ BOOTSTRAP_SAMPLES="${BOOTSTRAP_SAMPLES:-5000}"
 RANDOM_SEED="${RANDOM_SEED:-20260803}"
 RUN_GENERATION="${RUN_GENERATION:-true}"
 RUN_EVALUATION="${RUN_EVALUATION:-true}"
+RUN_SUPPLEMENTAL_ANALYSIS="${RUN_SUPPLEMENTAL_ANALYSIS:-true}"
 RESUME="${RESUME:-false}"
 ARCHIVE_INCOMPLETE_GENERATION="${ARCHIVE_INCOMPLETE_GENERATION:-false}"
 PROMPT_TEMPLATE="${P4_DCS_PROMPT_TEMPLATE:-}"
@@ -106,6 +107,13 @@ if [[ -e "$META_ROOT" ]]; then
         fi
     fi
     if [[ -f "$COMPLETE_FILE" ]]; then
+        if [[ "$RUN_SUPPLEMENTAL_ANALYSIS" == "true" ]]; then
+            python analyze_p4_visual_interaction.py \
+                --paired-effects "${ANALYSIS_DIR}/paired_effects_raw.csv" \
+                --output-dir "${ANALYSIS_DIR}/visual_interaction" \
+                --bootstrap-samples "$BOOTSTRAP_SAMPLES" \
+                --random-seed "$RANDOM_SEED"
+        fi
         echo "P4 run already complete: ${META_ROOT}"
         cat "${ANALYSIS_DIR}/summary.json"
         exit 0
@@ -258,6 +266,15 @@ if [[ "$RUN_EVALUATION" == "true" ]]; then
     cp "${ANALYSIS_DIR}/summary.json" "$COMPLETE_FILE"
 fi
 
+if [[ "$RUN_SUPPLEMENTAL_ANALYSIS" == "true" ]]; then
+    python analyze_p4_visual_interaction.py \
+        --paired-effects "${ANALYSIS_DIR}/paired_effects_raw.csv" \
+        --output-dir "${ANALYSIS_DIR}/visual_interaction" \
+        --bootstrap-samples "$BOOTSTRAP_SAMPLES" \
+        --random-seed "$RANDOM_SEED"
+fi
+
 echo "P4 experiment complete: ${META_ROOT}"
 echo "Analysis: ${ANALYSIS_DIR}/summary.json"
 echo "Plot: ${ANALYSIS_DIR}/p4_text_execution.png"
+echo "Supplemental interaction: ${ANALYSIS_DIR}/visual_interaction/summary.json"
