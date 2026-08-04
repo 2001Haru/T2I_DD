@@ -120,29 +120,53 @@ validate_dataset() {
     local expected actual
     expected="$(expected_images "$spec")"
     actual="$(find "$dataset_dir" -mindepth 2 -maxdepth 2 -type f -name '*.png' | wc -l)"
-    [[ "$actual" -eq "$expected" ]] || return 1
-    compgen -G "${dataset_dir}/prompt_records_gpu*.json" > /dev/null || return 1
+    if [[ "$actual" -ne "$expected" ]]; then
+        echo "Validation failed: ${dataset_dir} has ${actual} PNGs; expected ${expected}." >&2
+        return 1
+    fi
+    if ! compgen -G "${dataset_dir}/prompt_records_gpu*.json" > /dev/null; then
+        echo "Validation failed: no prompt_records_gpu*.json in ${dataset_dir}." >&2
+        return 1
+    fi
     if [[ "$require_guidance" == "true" ]]; then
-        [[ -f "${dataset_dir}/guidance_metrics/guidance_metrics_raw.csv" ]] || return 1
-        [[ -f "${dataset_dir}/guidance_metrics/guidance_metrics_summary.json" ]] || return 1
-        [[ -f "${dataset_dir}/prompt_config.json" ]] || return 1
-        jq -e \
+        for required in \
+            "${dataset_dir}/guidance_metrics/guidance_metrics_raw.csv" \
+            "${dataset_dir}/guidance_metrics/guidance_metrics_summary.json" \
+            "${dataset_dir}/prompt_config.json"; do
+            if [[ ! -f "$required" ]]; then
+                echo "Validation failed: missing ${required}." >&2
+                return 1
+            fi
+        done
+        if ! jq -e \
             --arg spec "$spec" --argjson seed "$seed" \
             --argjson gamma "$GUIDANCE_GAMMA" --argjson cfg "$CFG" --argjson gtp "$GTP" \
             '.metadata.spec == $spec and .metadata.seed == $seed
-             and ((.metadata.coda_guidance_scale - $gamma) | fabs) < 1e-9
-             and ((.metadata.cfg_guidance_scale - $cfg) | fabs) < 1e-9
-             and ((.metadata.guide_t_percent - $gtp) | fabs) < 1e-9
+             and .metadata.coda_guidance_scale == $gamma
+             and .metadata.cfg_guidance_scale == $cfg
+             and .metadata.guide_t_percent == $gtp
              and .metadata.conflict_projection_alpha == 0
              and .metadata.conflict_projection_kappa_cap == null' \
-            "${dataset_dir}/guidance_metrics/guidance_metrics_summary.json" > /dev/null || return 1
+            "${dataset_dir}/guidance_metrics/guidance_metrics_summary.json" > /dev/null; then
+            echo "Validation failed: guidance metadata differs for ${dataset_dir}." >&2
+            jq '.metadata' "${dataset_dir}/guidance_metrics/guidance_metrics_summary.json" >&2
+            return 1
+        fi
         if [[ "$mode" == "i1g1" ]]; then
-            jq -e --argjson strength "$PROTOTYPE_INIT_STRENGTH" \
-                '((.prototype_initialization_strength - $strength) | fabs) < 1e-9' \
-                "${dataset_dir}/prompt_config.json" > /dev/null || return 1
+            if ! jq -e --argjson strength "$PROTOTYPE_INIT_STRENGTH" \
+                '.prototype_initialization_strength == $strength' \
+                "${dataset_dir}/prompt_config.json" > /dev/null; then
+                echo "Validation failed: prototype strength differs for ${dataset_dir}." >&2
+                jq '.' "${dataset_dir}/prompt_config.json" >&2
+                return 1
+            fi
         else
-            jq -e '.prototype_initialization_strength == null' \
-                "${dataset_dir}/prompt_config.json" > /dev/null || return 1
+            if ! jq -e '.prototype_initialization_strength == null' \
+                "${dataset_dir}/prompt_config.json" > /dev/null; then
+                echo "Validation failed: I0 dataset unexpectedly uses prototype initialization: ${dataset_dir}." >&2
+                jq '.' "${dataset_dir}/prompt_config.json" >&2
+                return 1
+            fi
         fi
     fi
 }
