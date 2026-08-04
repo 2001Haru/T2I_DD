@@ -355,6 +355,120 @@ def overlap_permutation(vector_rows, scope, samples, seed):
     }
 
 
+def build_cross_seed_overlaps(vector_rows):
+    """Pair text and prototype displacements from different generation seeds."""
+    grouped = defaultdict(list)
+    for row in vector_rows:
+        grouped[(row["class_key"], row["visual_cluster_id"])].append(row)
+    output = []
+    for key, members in sorted(grouped.items()):
+        by_seed = {int(row["generation_seed"]): row for row in members}
+        if len(by_seed) != len(members):
+            raise ValueError(f"Duplicate generation seed in cross-seed group {key}")
+        if len(by_seed) < 2:
+            raise ValueError(f"Cross-seed overlap requires at least two seeds for {key}")
+        for text_seed, text_row in sorted(by_seed.items()):
+            for prototype_seed, prototype_row in sorted(by_seed.items()):
+                if text_seed == prototype_seed:
+                    continue
+                output.append(
+                    {
+                        "spec": text_row["spec"],
+                        "class_key": text_row["class_key"],
+                        "class_id": text_row["class_id"],
+                        "class_name": text_row["class_name"],
+                        "visual_cluster_id": text_row["visual_cluster_id"],
+                        "text_generation_seed": text_seed,
+                        "prototype_generation_seed": prototype_seed,
+                        "cross_seed_proto_text_overlap": cosine(
+                            text_row["d_text0"], prototype_row["d_proto"]
+                        ),
+                    }
+                )
+    return output
+
+
+def summarize_cross_seed_overlaps(rows, samples, seed):
+    output = []
+    for index, scope in enumerate(["combined"] + sorted({row["spec"] for row in rows})):
+        scoped = rows if scope == "combined" else [row for row in rows if row["spec"] == scope]
+        values = aggregate_class_cluster(scoped, "cross_seed_proto_text_overlap")
+        mean, lower, upper, groups = bootstrap(values, samples, seed + index)
+        output.append(
+            {
+                "scope": scope,
+                "metric": "cross_seed_proto_text_overlap",
+                "mean": mean,
+                "bootstrap_ci_lower": lower,
+                "bootstrap_ci_upper": upper,
+                "class_cluster_groups": groups,
+                "raw_cross_seed_pairs": len(scoped),
+                "positive_group_fraction": float(np.mean(finite(values) > 0)),
+                "median": float(np.nanmedian(values)),
+            }
+        )
+    return output
+
+
+def cross_seed_overlap_permutation(vector_rows, cross_rows, scope, samples, seed):
+    """Within-class cluster null with seed-disjoint vectors in every pairing."""
+    selected_vectors = vector_rows if scope == "combined" else [
+        row for row in vector_rows if row["spec"] == scope
+    ]
+    selected_cross = cross_rows if scope == "combined" else [
+        row for row in cross_rows if row["spec"] == scope
+    ]
+    observed = float(np.mean(aggregate_class_cluster(
+        selected_cross, "cross_seed_proto_text_overlap"
+    )))
+    by_class = defaultdict(list)
+    for row in selected_vectors:
+        by_class[row["class_key"]].append(row)
+    rng = np.random.default_rng(seed)
+    null_values = []
+    for _ in range(samples):
+        group_cosines = defaultdict(list)
+        for class_rows in by_class.values():
+            by_seed = defaultdict(dict)
+            for row in class_rows:
+                by_seed[int(row["generation_seed"])][row["visual_cluster_id"]] = row
+            seeds = sorted(by_seed)
+            cluster_ids = sorted({row["visual_cluster_id"] for row in class_rows})
+            for generation_seed in seeds:
+                if set(by_seed[generation_seed]) != set(cluster_ids):
+                    raise ValueError(
+                        f"Incomplete clusters across generation seeds in {class_rows[0]['class_key']}"
+                    )
+            permutation = dict(zip(cluster_ids, rng.permutation(cluster_ids)))
+            for text_seed in seeds:
+                for prototype_seed in seeds:
+                    if text_seed == prototype_seed:
+                        continue
+                    for cluster_id in cluster_ids:
+                        text_row = by_seed[text_seed][cluster_id]
+                        donor = by_seed[prototype_seed][permutation[cluster_id]]
+                        group_cosines[(text_row["class_key"], cluster_id)].append(
+                            cosine(text_row["d_text0"], donor["d_proto"])
+                        )
+        null_values.append(float(np.mean([
+            np.nanmean(values) for values in group_cosines.values()
+        ])))
+    null_values = np.asarray(null_values, dtype=np.float64)
+    return {
+        "scope": scope,
+        "metric": "cross_seed_proto_text_overlap",
+        "true_value": observed,
+        "null_mean": float(np.mean(null_values)),
+        "null_std": float(np.std(null_values)),
+        "delta_over_null": float(observed - np.mean(null_values)),
+        "null_partitions": samples,
+        "null_percentile": float(np.mean(observed > null_values)),
+        "permutation_p_one_sided": float(
+            (1 + np.sum(null_values >= observed)) / (samples + 1)
+        ),
+    }
+
+
 def average_group_rows(rows):
     grouped = defaultdict(list)
     for row in rows:
@@ -397,6 +511,146 @@ def correlation_rows(rows):
                  "spearman_rho": spearman, "class_cluster_groups": len(values)}
             )
     return output
+
+
+def correlation(left, right, kind):
+    if kind == "spearman":
+        left, right = rank_values(left), rank_values(right)
+    return float(np.corrcoef(left, right)[0, 1])
+
+
+def cross_seed_correlation_rows(rows, cross_rows, bootstrap_samples, permutation_samples, seed):
+    base_groups = {
+        (row["class_key"], row["visual_cluster_id"]): row
+        for row in average_group_rows(rows)
+    }
+    overlap_groups = defaultdict(list)
+    metadata = {}
+    for row in cross_rows:
+        key = (row["class_key"], row["visual_cluster_id"])
+        overlap_groups[key].append(float(row["cross_seed_proto_text_overlap"]))
+        metadata[key] = row
+    merged = []
+    for key, values in overlap_groups.items():
+        merged.append(
+            {
+                **base_groups[key],
+                "cross_seed_proto_text_overlap": float(np.nanmean(values)),
+                "spec": metadata[key]["spec"],
+            }
+        )
+
+    output = []
+    rng = np.random.default_rng(seed)
+    targets = (
+        "text_norm_log_ratio", "swap_norm_log_ratio",
+        "target_alignment_delta", "target_residual_delta",
+    )
+    counter = 0
+    for scope in ["combined"] + sorted({row["spec"] for row in merged}):
+        scoped = merged if scope == "combined" else [row for row in merged if row["spec"] == scope]
+        for target in targets:
+            raw_matrix = np.asarray([
+                [row["cross_seed_proto_text_overlap"], row[target]] for row in scoped
+            ], dtype=np.float64)
+            valid_mask = np.all(np.isfinite(raw_matrix), axis=1)
+            matrix = raw_matrix[valid_mask]
+            valid_rows = [row for row, valid in zip(scoped, valid_mask) if valid]
+            for kind in ("pearson", "spearman"):
+                observed = correlation(matrix[:, 0], matrix[:, 1], kind)
+                bootstrap_values = []
+                local_rng = np.random.default_rng(seed + counter)
+                for _ in range(bootstrap_samples):
+                    indices = local_rng.integers(0, len(matrix), size=len(matrix))
+                    bootstrap_values.append(correlation(
+                        matrix[indices, 0], matrix[indices, 1], kind
+                    ))
+                bootstrap_values = finite(bootstrap_values)
+
+                # The redundancy hypothesis predicts a negative association.
+                null_values = []
+                class_indices = defaultdict(list)
+                for index, row in enumerate(valid_rows):
+                    class_indices[row["class_key"]].append(index)
+                for _ in range(permutation_samples):
+                    permuted_right = matrix[:, 1].copy()
+                    for indices in class_indices.values():
+                        permuted_right[indices] = rng.permutation(permuted_right[indices])
+                    null_values.append(correlation(
+                        matrix[:, 0], permuted_right, kind
+                    ))
+                null_values = finite(null_values)
+                output.append(
+                    {
+                        "scope": scope,
+                        "x": "cross_seed_proto_text_overlap",
+                        "y": target,
+                        "correlation": kind,
+                        "value": observed,
+                        "bootstrap_ci_lower": float(np.quantile(bootstrap_values, 0.025)),
+                        "bootstrap_ci_upper": float(np.quantile(bootstrap_values, 0.975)),
+                        "permutation_p_one_sided_negative": float(
+                            (1 + np.sum(null_values <= observed)) / (len(null_values) + 1)
+                        ),
+                        "class_cluster_groups": len(matrix),
+                    }
+                )
+                counter += 1
+    return output
+
+
+def plot_cross_seed_results(output_dir, rows, cross_rows, summary, null_rows, correlations):
+    lookup = {row["scope"]: row for row in summary}
+    null_lookup = {row["scope"]: row for row in null_rows}
+    grouped = average_group_rows(rows)
+    overlap_groups = defaultdict(list)
+    for row in cross_rows:
+        overlap_groups[(row["class_key"], row["visual_cluster_id"])].append(
+            row["cross_seed_proto_text_overlap"]
+        )
+    for row in grouped:
+        row["cross_seed_proto_text_overlap"] = float(np.mean(
+            overlap_groups[(row["class_key"], row["visual_cluster_id"])]
+        ))
+
+    figure, axes = plt.subplots(1, 2, figsize=(13, 5))
+    scopes = ["combined"] + sorted(scope for scope in lookup if scope != "combined")
+    matched = [lookup[scope]["mean"] for scope in scopes]
+    null = [null_lookup[scope]["null_mean"] for scope in scopes]
+    x = np.arange(len(scopes))
+    axes[0].bar(x - 0.18, matched, width=0.36, label="cross-seed matched")
+    axes[0].bar(x + 0.18, null, width=0.36, label="within-class permuted")
+    axes[0].set_xticks(x, scopes)
+    axes[0].set_ylabel("Mean cosine")
+    axes[0].set_title("Seed-disjoint prototype-text overlap")
+    axes[0].legend()
+
+    colors = {"imageA": "tab:blue", "imageB": "tab:orange", "imageC": "tab:green"}
+    for spec, color in colors.items():
+        selected = [row for row in grouped if row["spec"] == spec]
+        axes[1].scatter(
+            [row["cross_seed_proto_text_overlap"] for row in selected],
+            [row["text_norm_log_ratio"] for row in selected],
+            alpha=0.65, color=color, label=spec,
+        )
+    primary_correlation = next(
+        row for row in correlations
+        if row["scope"] == "combined" and row["y"] == "text_norm_log_ratio"
+        and row["correlation"] == "spearman"
+    )
+    axes[1].set_title(
+        f"Overlap vs attenuation: rho={primary_correlation['value']:.3f}"
+    )
+    axes[1].set_xlabel("Cross-seed prototype-text cosine")
+    axes[1].set_ylabel("Correct-text log norm ratio")
+    axes[1].legend()
+    for axis in axes:
+        axis.axhline(0, color="black", linestyle="--", linewidth=1)
+        axis.grid(alpha=0.2)
+    figure.suptitle("P4b corrected overlap without a shared generated-image anchor")
+    figure.tight_layout()
+    figure.savefig(Path(output_dir) / "p4b_cross_seed_overlap.png", dpi=180)
+    plt.close(figure)
 
 
 def plot_results(output_dir, rows, summary, null_rows):
@@ -465,20 +719,51 @@ def main():
     rows, vector_rows = calculate_rows(records, probes)
     summary = summarize(rows, args.bootstrap_samples, args.random_seed)
     by_seed = summarize_by_seed(rows, args.bootstrap_samples, args.random_seed + 10000)
+    cross_rows = build_cross_seed_overlaps(vector_rows)
+    cross_summary = summarize_cross_seed_overlaps(
+        cross_rows, args.bootstrap_samples, args.random_seed + 20000
+    )
     null_rows = [
         overlap_permutation(vector_rows, scope, args.permutation_samples, args.random_seed + index)
         for index, scope in enumerate(["combined"] + sorted({row["spec"] for row in rows}))
     ]
+    cross_null_rows = [
+        cross_seed_overlap_permutation(
+            vector_rows, cross_rows, scope, args.permutation_samples,
+            args.random_seed + 30000 + index,
+        )
+        for index, scope in enumerate(["combined"] + sorted({row["spec"] for row in rows}))
+    ]
     correlations = correlation_rows(rows)
+    cross_correlations = cross_seed_correlation_rows(
+        rows, cross_rows, args.bootstrap_samples, args.permutation_samples,
+        args.random_seed + 40000,
+    )
     write_csv(output_dir / "feature_displacements_raw.csv", rows)
     write_csv(output_dir / "feature_displacements_summary.csv", summary)
     write_csv(output_dir / "feature_displacements_by_seed.csv", by_seed)
     write_csv(output_dir / "prototype_text_overlap_null.csv", null_rows)
     write_csv(output_dir / "feature_displacement_correlations.csv", correlations)
+    write_csv(output_dir / "cross_seed_overlap_raw.csv", cross_rows)
+    write_csv(output_dir / "cross_seed_overlap_summary.csv", cross_summary)
+    write_csv(output_dir / "cross_seed_overlap_null.csv", cross_null_rows)
+    write_csv(output_dir / "cross_seed_overlap_correlations.csv", cross_correlations)
     plot_results(output_dir, rows, summary, null_rows)
+    plot_cross_seed_results(
+        output_dir, rows, cross_rows, cross_summary, cross_null_rows, cross_correlations
+    )
 
     lookup = {(row["scope"], row["metric"]): row for row in summary}
     combined_null = next(row for row in null_rows if row["scope"] == "combined")
+    combined_cross = next(row for row in cross_summary if row["scope"] == "combined")
+    combined_cross_null = next(
+        row for row in cross_null_rows if row["scope"] == "combined"
+    )
+    primary_cross_correlation = next(
+        row for row in cross_correlations
+        if row["scope"] == "combined" and row["y"] == "text_norm_log_ratio"
+        and row["correlation"] == "spearman"
+    )
     primary = {
         metric: lookup[("combined", metric)] for metric in (
             "text_norm_log_ratio", "swap_norm_log_ratio", "proto_text_overlap",
@@ -492,9 +777,21 @@ def main():
             "feature_space": "L2-normalized cached DINO image features",
             "primary": primary,
             "prototype_text_overlap_permutation": combined_null,
+            "shared_anchor_overlap_warning": (
+                "proto_text_overlap shares the I0G0 Label endpoint in both displacement "
+                "vectors and is retained only as a diagnostic; use cross-seed overlap as "
+                "the primary redundancy test"
+            ),
+            "cross_seed_proto_text_overlap": combined_cross,
+            "cross_seed_proto_text_overlap_permutation": combined_cross_null,
+            "cross_seed_overlap_vs_attenuation": primary_cross_correlation,
             "bootstrap_unit": "class_key x visual_cluster_id after averaging generation seeds",
             "permutation_null": (
                 "within-class cluster permutation of d_proto donors, shared across generation seeds"
+            ),
+            "cross_seed_definition": (
+                "cos(d_text_i0g0 at seed s, d_proto at seed s_prime) for every ordered "
+                "seed pair s != s_prime; no generated image appears in both vectors"
             ),
             "interpretation": {
                 "redundancy": (

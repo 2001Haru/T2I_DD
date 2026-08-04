@@ -1,7 +1,12 @@
 import numpy as np
 import pytest
 
-from analyze_p4_feature_displacements import calculate_rows, cosine, target_specificity
+from analyze_p4_feature_displacements import (
+    build_cross_seed_overlaps,
+    calculate_rows,
+    cosine,
+    target_specificity,
+)
 
 
 def test_cosine_and_zero_vector_handling():
@@ -52,3 +57,29 @@ def test_calculate_rows_keeps_correct_and_swap_displacements_separate():
     assert rows[0]["text_norm_i1g0"] < rows[0]["text_norm_i0g0"]
     assert rows[0]["swap_norm_i1g0"] > rows[0]["swap_norm_i0g0"]
     assert "features" not in rows[0]
+
+
+def test_cross_seed_overlap_never_reuses_the_same_seed():
+    common = {
+        "spec": "imageA", "class_key": "imageA:n1", "class_id": "n1",
+        "class_name": "class", "visual_cluster_id": 0,
+    }
+    rows = [
+        {**common, "generation_seed": 0, "d_text0": np.asarray([1.0, 0.0]),
+         "d_proto": np.asarray([0.0, 1.0])},
+        {**common, "generation_seed": 1, "d_text0": np.asarray([0.0, 1.0]),
+         "d_proto": np.asarray([1.0, 0.0])},
+    ]
+    result = build_cross_seed_overlaps(rows)
+    assert len(result) == 2
+    assert all(row["text_generation_seed"] != row["prototype_generation_seed"] for row in result)
+    assert all(row["cross_seed_proto_text_overlap"] == pytest.approx(1.0) for row in result)
+
+
+def test_cross_seed_overlap_requires_multiple_generation_seeds():
+    with pytest.raises(ValueError, match="at least two seeds"):
+        build_cross_seed_overlaps([{
+            "spec": "imageA", "class_key": "imageA:n1", "class_id": "n1",
+            "class_name": "class", "visual_cluster_id": 0, "generation_seed": 0,
+            "d_text0": np.ones(2), "d_proto": np.ones(2),
+        }])
