@@ -819,3 +819,18 @@ Partial classifier outputs are rejected by default. Set
 `ARCHIVE_INCOMPLETE_CLASSIFIERS=true` to archive only the interrupted cell and
 continue. Results and paired factorial contrasts are written under
 `trained_results/p6_downstream_value_runs/<RUN_ID>/summary/`.
+
+With four GPUs, the default scheduler runs two independent two-GPU classifier
+cells concurrently: GPUs `0,1` train one cell while GPUs `2,3` train the next.
+Each cell therefore retains the original two-classifier-seed protocol. Sparse
+filler generation defaults to GPU 0 because it generates only the omitted
+cluster slots. The scheduling can be overridden without changing the run:
+
+```bash
+TRAIN_GPU_GROUPS="0,1 2,3" \
+FILLER_CUDA_VISIBLE_DEVICES=0 \
+P6_RUN_ID=p6_downstream_value_v0 \
+bash scripts/p6_downstream_value.sh
+```
+
+On a two-GPU machine, use `TRAIN_GPU_GROUPS="0,1"`.

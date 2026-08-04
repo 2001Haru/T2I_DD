@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1,2,3}"
 export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION="${PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION:-python}"
 export TOKENIZERS_PARALLELISM=false
 
@@ -22,6 +22,8 @@ CFG="${CFG:-5.0}"
 GUIDANCE_GAMMA="${P6_GUIDANCE_GAMMA:-0.05}"
 PROTOTYPE_INIT_STRENGTH="${PROTOTYPE_INIT_STRENGTH:-0.7}"
 EVAL_SEED="${EVAL_SEED:-0}"
+TRAIN_GPU_GROUPS="${TRAIN_GPU_GROUPS:-0,1 2,3}"
+FILLER_CUDA_VISIBLE_DEVICES="${FILLER_CUDA_VISIBLE_DEVICES:-0}"
 RUN_FILLER_GENERATION="${RUN_FILLER_GENERATION:-true}"
 RUN_DATASET_ASSEMBLY="${RUN_DATASET_ASSEMBLY:-true}"
 RUN_DOWNSTREAM_TRAINING="${RUN_DOWNSTREAM_TRAINING:-true}"
@@ -161,7 +163,7 @@ generate_filler() {
     )
     [[ "$regime" == i1* ]] && args+=(--prototype_initialization_strength "$PROTOTYPE_INIT_STRENGTH")
     echo "==> Generating neutral filler ${spec}/${regime}, generation seed ${seed}" >&2
-    python CoDA_main.py "${args[@]}" >&2
+    CUDA_VISIBLE_DEVICES="$FILLER_CUDA_VISIBLE_DEVICES" python CoDA_main.py "${args[@]}" >&2
     validate_filler "$spec" "$output_dir" || {
         echo "Neutral filler generation is incomplete: ${output_dir}" >&2
         exit 1
@@ -242,7 +244,7 @@ require_completed_result() {
 }
 
 train_cell() {
-    local spec=$1 seed=$2 regime=$3 prompt=$4
+    local spec=$1 seed=$2 regime=$3 prompt=$4 gpu_group=$5
     local condition="${regime}_${prompt}"
     local dataset_dir="${DATASET_ROOT}/${spec}/seed_${seed}/${condition}"
     local save_dir="${SAVE_ROOT}/${spec}/seed_${seed}/${condition}-resnet_ap"
@@ -269,8 +271,8 @@ train_cell() {
         echo "Missing classifier result with RUN_DOWNSTREAM_TRAINING=false: ${result}" >&2
         exit 1
     fi
-    echo "==> Training P6 ${spec}/${condition}, generation seed ${seed}"
-    python ./test/train.py \
+    echo "==> Training P6 ${spec}/${condition}, generation seed ${seed} on GPUs ${gpu_group}"
+    CUDA_VISIBLE_DEVICES="$gpu_group" python ./test/train.py \
         --dataset_dir "$dataset_dir" "$IMAGENET_VAL_FOLDER" \
         -d imagenet --spec "$spec" --nclass 10 --size 256 --ipc "$IPC" \
         -n resnet_ap --depth 10 --save-dir "$save_dir" \
@@ -280,14 +282,66 @@ train_cell() {
     require_completed_result "$result" || { echo "P6 classifier did not complete: ${result}" >&2; exit 1; }
 }
 
+read -r -a gpu_groups <<< "$TRAIN_GPU_GROUPS"
+if [[ "${#gpu_groups[@]}" -eq 0 ]]; then
+    echo "TRAIN_GPU_GROUPS selects no GPU groups." >&2
+    exit 1
+fi
+declare -A scheduled_gpu_ids=()
+for group in "${gpu_groups[@]}"; do
+    if [[ ! "$group" =~ ^[0-9]+,[0-9]+$ ]]; then
+        echo "Each TRAIN_GPU_GROUPS entry must contain two GPU IDs, for example 0,1: ${group}" >&2
+        exit 1
+    fi
+    IFS=',' read -r first_gpu second_gpu <<< "$group"
+    if [[ "$first_gpu" == "$second_gpu" ]]; then
+        echo "A training GPU group cannot repeat the same GPU: ${group}" >&2
+        exit 1
+    fi
+    for gpu_id in "$first_gpu" "$second_gpu"; do
+        if [[ -n "${scheduled_gpu_ids[$gpu_id]:-}" ]]; then
+            echo "Training GPU ${gpu_id} occurs in more than one concurrent group." >&2
+            exit 1
+        fi
+        scheduled_gpu_ids[$gpu_id]=true
+    done
+done
+
+cells=()
 for spec in $SPECS; do
     for seed in $GENERATION_SEEDS; do
         for regime in i0g0 i1g0 i0g1 i1g1; do
             for prompt in label correct shuffled; do
-                train_cell "$spec" "$seed" "$regime" "$prompt"
+                cells+=("${spec}|${seed}|${regime}|${prompt}")
             done
         done
     done
+done
+
+cell_index=0
+while [[ "$cell_index" -lt "${#cells[@]}" ]]; do
+    pids=()
+    labels=()
+    for gpu_group in "${gpu_groups[@]}"; do
+        [[ "$cell_index" -lt "${#cells[@]}" ]] || break
+        IFS='|' read -r spec seed regime prompt <<< "${cells[$cell_index]}"
+        train_cell "$spec" "$seed" "$regime" "$prompt" "$gpu_group" &
+        pids+=("$!")
+        labels+=("${spec}/seed_${seed}/${regime}_${prompt} on ${gpu_group}")
+        cell_index=$((cell_index + 1))
+    done
+
+    batch_failed=false
+    for index in "${!pids[@]}"; do
+        if ! wait "${pids[$index]}"; then
+            echo "P6 classifier cell failed: ${labels[$index]}" >&2
+            batch_failed=true
+        fi
+    done
+    if [[ "$batch_failed" == "true" ]]; then
+        echo "P6 stopped after the current concurrent batch. Completed sibling cells are reusable." >&2
+        exit 1
+    fi
 done
 
 if [[ "$RUN_SUMMARY" == "true" ]]; then
