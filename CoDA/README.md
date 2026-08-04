@@ -790,3 +790,32 @@ cluster-balanced approximation to VLCP DCS rather than the full-data method.
 The manifest records original and sampled cluster sizes. `0` restores the full
 method. `DCS_CAPTION_BATCH_SIZE=2` can improve throughput on GPUs with spare
 memory, but the default remains `1` for constrained V100 servers.
+
+## P6 downstream-value factorial
+
+After completed `p4_text_execution_v0` and `p5_continuous_guidance_v0` runs,
+train the downstream classifier on all four visual-injection regimes crossed
+with Label, Correct DCS, and Shuffled DCS:
+
+```bash
+P6_RUN_ID=p6_downstream_value_v0 \
+bash scripts/p6_downstream_value.sh
+```
+
+P4/P5 omit probe-ineligible sparse clusters. P6 restores a complete IPC=10
+dataset by generating each missing cluster once with the Label condition and
+hard-linking that same neutral filler into all three prompt arms within the
+same visual regime and generation seed. This keeps the prompt comparison
+paired without assigning an unvalidated DCS caption to the sparse cluster.
+
+The 72 classifier cells are resumable. Re-run with:
+
+```bash
+P6_RUN_ID=p6_downstream_value_v0 RESUME=true \
+bash scripts/p6_downstream_value.sh
+```
+
+Partial classifier outputs are rejected by default. Set
+`ARCHIVE_INCOMPLETE_CLASSIFIERS=true` to archive only the interrupted cell and
+continue. Results and paired factorial contrasts are written under
+`trained_results/p6_downstream_value_runs/<RUN_ID>/summary/`.

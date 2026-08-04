@@ -292,16 +292,18 @@ def main(args):
             normalized_indices = {}
             for class_id in sel_classes:
                 values = generation_indices.get(class_id)
-                if not isinstance(values, list) or not values:
+                if not isinstance(values, list):
                     raise ValueError(
-                        f"Missing non-empty generation cluster list for {class_id}."
+                        f"Missing generation cluster list for {class_id}."
                     )
                 indices = sorted({int(value) for value in values})
-                if indices[0] < 0 or indices[-1] >= args.IPC:
+                if indices and (indices[0] < 0 or indices[-1] >= args.IPC):
                     raise ValueError(
                         f"Generation cluster indices out of range for {class_id}: {indices}"
                     )
                 normalized_indices[class_id] = indices
+            if not any(normalized_indices.values()):
+                raise ValueError("Generation cluster index file selects no clusters.")
             args._generation_cluster_indices = normalized_indices
 
         args._cluster_caption_source_map = None
