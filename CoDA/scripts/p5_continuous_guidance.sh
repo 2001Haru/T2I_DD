@@ -26,6 +26,7 @@ PERMUTATION_SAMPLES="${PERMUTATION_SAMPLES:-1000}"
 RANDOM_SEED="${RANDOM_SEED:-20260804}"
 RUN_GENERATION="${RUN_GENERATION:-true}"
 RUN_EVALUATION="${RUN_EVALUATION:-true}"
+RERUN_EVALUATION="${RERUN_EVALUATION:-false}"
 RESUME="${RESUME:-false}"
 ARCHIVE_INCOMPLETE_GENERATION="${ARCHIVE_INCOMPLETE_GENERATION:-false}"
 PROMPT_TEMPLATE="${P5_DCS_PROMPT_TEMPLATE:-}"
@@ -91,9 +92,12 @@ if [[ -e "$META_ROOT" ]]; then
         exit 1
     fi
     if [[ -f "$COMPLETE_FILE" ]]; then
-        echo "P5 run already complete: ${META_ROOT}"
-        cat "${ANALYSIS_DIR}/summary.json"
-        exit 0
+        if [[ "$RERUN_EVALUATION" != "true" ]]; then
+            echo "P5 run already complete: ${META_ROOT}"
+            cat "${ANALYSIS_DIR}/summary.json"
+            exit 0
+        fi
+        echo "==> Re-running P5 evaluation from completed generated datasets" >&2
     fi
 else
     mkdir -p "$META_ROOT"

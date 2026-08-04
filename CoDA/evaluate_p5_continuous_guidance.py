@@ -382,6 +382,77 @@ def summarize_geometry_by_generation_seed(rows):
     return output
 
 
+def geometry_three_way_rows(rows):
+    """Compute (I1G1-I1G0) - (I0G1-I0G0) in DINO geometry.
+
+    Norm effects are already represented as log(G1/G0), so subtraction gives
+    the log ratio-of-ratios. Other metrics are ordinary G1-G0 differences.
+    """
+    indexed = defaultdict(dict)
+    identity_columns = (
+        "spec", "class_key", "class_id", "class_name", "visual_cluster_id",
+        "generation_seed", "image_seed",
+    )
+    for row in rows:
+        key = tuple(row[column] for column in identity_columns)
+        indexed[key][row["initialization"]] = row
+    output = []
+    for key, initializations in sorted(indexed.items()):
+        if set(initializations) != {"i0", "i1"}:
+            raise ValueError(f"Incomplete P5 geometry interaction pair for {key}")
+        record = dict(zip(identity_columns, key))
+        for metric in GEOMETRY_METRICS:
+            record[f"i0_{metric}"] = float(initializations["i0"][metric])
+            record[f"i1_{metric}"] = float(initializations["i1"][metric])
+            record[f"three_way_{metric}"] = (
+                float(initializations["i1"][metric])
+                - float(initializations["i0"][metric])
+            )
+        output.append(record)
+    return output
+
+
+def summarize_geometry_three_way(rows, bootstrap_samples, seed):
+    output = []
+    counter = 0
+    for scope in ["combined"] + sorted({row["spec"] for row in rows}):
+        scoped = rows if scope == "combined" else [row for row in rows if row["spec"] == scope]
+        for metric in GEOMETRY_METRICS:
+            stats = bootstrap_grouped(
+                scoped, f"three_way_{metric}", bootstrap_samples, seed + counter
+            )
+            counter += 1
+            output.append({
+                "scope": scope,
+                "metric": metric,
+                "contrast": "I1_minus_I0_of_G1_minus_G0",
+                **stats,
+            })
+    return output
+
+
+def summarize_geometry_three_way_by_generation_seed(rows):
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[row["generation_seed"]].append(row)
+    output = []
+    for generation_seed, selected in sorted(grouped.items()):
+        for metric in GEOMETRY_METRICS:
+            values = np.asarray([
+                float(row[f"three_way_{metric}"]) for row in selected
+            ])
+            output.append({
+                "generation_seed": generation_seed,
+                "metric": metric,
+                "contrast": "I1_minus_I0_of_G1_minus_G0",
+                "mean": float(np.mean(values)),
+                "std_over_class_clusters": float(np.std(values)),
+                "positive_fraction": float(np.mean(values > 0)),
+                "class_cluster_observations": len(values),
+            })
+    return output
+
+
 def load_guidance_rows(datasets):
     output = []
     step_output = []
@@ -622,6 +693,32 @@ def plot_guidance_steps(output_dir, rows):
     plt.close(figure)
 
 
+def plot_geometry_three_way(output_dir, rows):
+    selected = {
+        row["metric"]: row for row in rows if row["scope"] == "combined"
+    }
+    metrics = (
+        "text_norm_log_ratio", "swap_norm_log_ratio", "target_alignment_delta",
+        "target_specificity_delta", "target_residual_delta",
+    )
+    labels = ("Correct norm", "Shuffle norm", "alignment", "specificity", "residual")
+    means = np.asarray([selected[metric]["mean"] for metric in metrics])
+    errors = np.asarray([
+        [selected[metric]["mean"] - selected[metric]["bootstrap_ci_lower"] for metric in metrics],
+        [selected[metric]["bootstrap_ci_upper"] - selected[metric]["mean"] for metric in metrics],
+    ])
+    figure, axis = plt.subplots(figsize=(10, 5.5))
+    axis.bar(np.arange(len(metrics)), means, yerr=errors, capsize=5)
+    axis.set_xticks(np.arange(len(metrics)), labels)
+    axis.axhline(0, color="black", linestyle="--", linewidth=1)
+    axis.set_ylabel("(I1G1-I1G0) - (I0G1-I0G0)")
+    axis.set_title("P5 paired three-way interaction in DINO feature geometry")
+    axis.grid(axis="y", alpha=0.25)
+    figure.tight_layout()
+    figure.savefig(Path(output_dir) / "p5_feature_three_way_bootstrap.png", dpi=180)
+    plt.close(figure)
+
+
 def main():
     args = parse_args()
     output_dir = Path(args.output_dir)
@@ -659,6 +756,13 @@ def main():
         geometry, args.bootstrap_samples, args.random_seed + 20000
     )
     geometry_by_seed = summarize_geometry_by_generation_seed(geometry)
+    geometry_three_way = geometry_three_way_rows(geometry)
+    geometry_three_way_summary = summarize_geometry_three_way(
+        geometry_three_way, args.bootstrap_samples, args.random_seed + 25000
+    )
+    geometry_three_way_by_seed = summarize_geometry_three_way_by_generation_seed(
+        geometry_three_way
+    )
     conflict, conflict_steps_raw = load_guidance_rows(datasets)
     conflict_steps = summarize_guidance_steps(conflict_steps_raw)
     correlations = conflict_correlations(
@@ -677,12 +781,22 @@ def main():
     write_csv(output_dir / "feature_displacements_raw.csv", geometry)
     write_csv(output_dir / "feature_displacements_summary.csv", geometry_summary)
     write_csv(output_dir / "feature_displacements_by_generation_seed.csv", geometry_by_seed)
+    write_csv(output_dir / "feature_displacement_three_way_raw.csv", geometry_three_way)
+    write_csv(
+        output_dir / "feature_displacement_three_way_summary.csv",
+        geometry_three_way_summary,
+    )
+    write_csv(
+        output_dir / "feature_displacement_three_way_by_generation_seed.csv",
+        geometry_three_way_by_seed,
+    )
     write_csv(output_dir / "guidance_conflict_per_sample.csv", conflict)
     write_csv(output_dir / "guidance_conflict_per_step_raw.csv", conflict_steps_raw)
     write_csv(output_dir / "guidance_conflict_per_step_summary.csv", conflict_steps)
     write_csv(output_dir / "guidance_conflict_output_correlations.csv", correlations)
     plot_results(output_dir, interaction_summary, geometry_summary, recovery_summary)
     plot_guidance_steps(output_dir, conflict_steps)
+    plot_geometry_three_way(output_dir, geometry_three_way_summary)
 
     primary = {}
     for initialization in ("i0", "i1", "i1_minus_i0"):
@@ -698,6 +812,13 @@ def main():
         f"{row['initialization']}_{row['metric']}": row
         for row in geometry_summary if row["scope"] == "combined"
         and row["metric"] in {
+            "text_norm_log_ratio", "swap_norm_log_ratio", "target_alignment_delta",
+            "target_specificity_delta", "target_residual_delta",
+        }
+    }
+    primary["feature_displacement_three_way"] = {
+        row["metric"]: row for row in geometry_three_way_summary
+        if row["scope"] == "combined" and row["metric"] in {
             "text_norm_log_ratio", "swap_norm_log_ratio", "target_alignment_delta",
             "target_specificity_delta", "target_residual_delta",
         }

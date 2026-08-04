@@ -8,6 +8,8 @@ import unittest
 
 from evaluate_p5_continuous_guidance import (
     EFFECT_METRICS,
+    GEOMETRY_METRICS,
+    geometry_three_way_rows,
     guidance_interaction_rows,
     summarize_interactions_by_generation_seed,
 )
@@ -47,6 +49,21 @@ class P5InteractionTest(unittest.TestCase):
             if item["initialization"] == "i1_minus_i0" and item["metric"] == "delta_pull"
         )
         self.assertEqual(row["mean"], 3.0)
+
+    def test_geometry_ratio_of_ratios(self):
+        base = {
+            "spec": "imageA", "class_key": "imageA:n00000001",
+            "class_id": "n00000001", "class_name": "example",
+            "visual_cluster_id": 2, "generation_seed": 0, "image_seed": 123,
+        }
+        i0 = {**base, "initialization": "i0"}
+        i1 = {**base, "initialization": "i1"}
+        for metric in GEOMETRY_METRICS:
+            i0[metric] = -0.4
+            i1[metric] = -2.0
+        row = geometry_three_way_rows([i0, i1])[0]
+        self.assertAlmostEqual(row["three_way_text_norm_log_ratio"], -1.6)
+        self.assertAlmostEqual(row["three_way_swap_norm_log_ratio"], -1.6)
 
 
 if __name__ == "__main__":
