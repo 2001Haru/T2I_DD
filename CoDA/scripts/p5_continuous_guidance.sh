@@ -119,7 +119,10 @@ validate_dataset() {
     local mode=${5:-}
     local expected actual
     expected="$(expected_images "$spec")"
-    actual="$(find "$dataset_dir" -mindepth 2 -maxdepth 2 -type f -name '*.png' | wc -l)"
+    # Guidance diagnostics also save PNG plots at depth two. Count only images
+    # stored below ImageNet synset directories (for example n02111129/3.png).
+    actual="$(find "$dataset_dir" -mindepth 2 -maxdepth 2 -type f \
+        -path '*/n[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/*.png' | wc -l)"
     if [[ "$actual" -ne "$expected" ]]; then
         echo "Validation failed: ${dataset_dir} has ${actual} PNGs; expected ${expected}." >&2
         return 1
