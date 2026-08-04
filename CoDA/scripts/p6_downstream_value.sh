@@ -24,6 +24,8 @@ PROTOTYPE_INIT_STRENGTH="${PROTOTYPE_INIT_STRENGTH:-0.7}"
 EVAL_SEED="${EVAL_SEED:-0}"
 TRAIN_GPU_GROUPS="${TRAIN_GPU_GROUPS:-0,1 2,3}"
 FILLER_CUDA_VISIBLE_DEVICES="${FILLER_CUDA_VISIBLE_DEVICES:-0}"
+TRAIN_WORKERS="${P6_TRAIN_WORKERS:-4}"
+VAL_WORKERS="${P6_VAL_WORKERS:-2}"
 RUN_FILLER_GENERATION="${RUN_FILLER_GENERATION:-true}"
 RUN_DATASET_ASSEMBLY="${RUN_DATASET_ASSEMBLY:-true}"
 RUN_DOWNSTREAM_TRAINING="${RUN_DOWNSTREAM_TRAINING:-true}"
@@ -276,7 +278,7 @@ train_cell() {
         --dataset_dir "$dataset_dir" "$IMAGENET_VAL_FOLDER" \
         -d imagenet --spec "$spec" --nclass 10 --size 256 --ipc "$IPC" \
         -n resnet_ap --depth 10 --save-dir "$save_dir" \
-        --seed "$EVAL_SEED" --workers 12 \
+        --seed "$EVAL_SEED" --workers "$TRAIN_WORKERS" --val-workers "$VAL_WORKERS" \
         --n_neighbors "$N_NEIGHBORS" --min_cluster_size "$MIN_CLUSTER_SIZE" \
         --experiment_method "$condition" --tag "p6_${spec}_generation_seed_${seed}"
     require_completed_result "$result" || { echo "P6 classifier did not complete: ${result}" >&2; exit 1; }

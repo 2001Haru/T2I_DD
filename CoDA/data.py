@@ -500,7 +500,7 @@ def load_data(args, tsne=False,detailed=True):
     val_loader = MultiEpochsDataLoader(val_dataset,
                                        batch_size=args.batch_size//2,
                                        shuffle=False,
-                                       persistent_workers=True,
-                                       num_workers=8,
+                                       persistent_workers=args.val_workers > 0,
+                                       num_workers=args.val_workers,
                                        pin_memory=True)
     return train_dataset, train_loader, val_loader, args.nclass

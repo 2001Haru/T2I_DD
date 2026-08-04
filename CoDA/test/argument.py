@@ -143,6 +143,8 @@ parser.add_argument('--verbose',
                     action='store_true',
                     help='to print the status at every iteration')
 parser.add_argument('-j', '--workers', default=4, type=int, help='number of data loading workers')
+parser.add_argument('--val-workers', default=8, type=int,
+                    help='number of validation data loading workers')
 parser.add_argument('--save_ckpt', type=str2bool, default=False)
 parser.add_argument('--save-dir', type=str, default=None)
 parser.add_argument('--timing_file', type=str, default=None, help='Shared experiment timing JSON file.')

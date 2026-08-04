@@ -834,3 +834,9 @@ bash scripts/p6_downstream_value.sh
 ```
 
 On a two-GPU machine, use `TRAIN_GPU_GROUPS="0,1"`.
+
+The four-GPU scheduler defaults to four training-loader workers and two
+validation-loader workers per GPU process (`P6_TRAIN_WORKERS=4` and
+`P6_VAL_WORKERS=2`). With four simultaneous GPU processes this creates about
+24 DataLoader workers. The older `--workers 12` plus eight fixed validation
+workers would create roughly 80 workers and can exhaust host RAM or `/dev/shm`.
