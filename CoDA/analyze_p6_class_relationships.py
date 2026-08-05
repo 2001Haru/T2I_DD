@@ -211,6 +211,12 @@ def add_external_metrics(class_records, p3, p4):
             row[f"{regime}_correct_minus_shuffled"] = row[f"{regime}_correct"] - row[
                 f"{regime}_shuffled"
             ]
+        baseline = row["i0g0_matched_label"]
+        correct = row["i0g0_correct"]
+        row["i0g0_oldham_mean"] = 0.5 * (baseline + correct)
+        row["i0g0_headroom_normalized_content_gain"] = (
+            row["i0g0_content_gain"] / max(100.0 - baseline, 1e-8)
+        )
         for regime in ("i0g0", "i1g0"):
             for probe in ("linear_probe", "nearest_centroid"):
                 p4_key = (row["class_key"], row["generation_seed"], regime, probe)
@@ -219,6 +225,37 @@ def add_external_metrics(class_records, p3, p4):
                 row[f"p4_{regime}_{probe}_delta_pull"] = p4[p4_key]
         rows.append(row)
     return rows
+
+
+def build_cross_seed_records(records):
+    grouped = defaultdict(list)
+    for row in records:
+        grouped[(row["spec"], row["class_id"])].append(row)
+    result = defaultdict(list)
+    for members in grouped.values():
+        by_seed = {int(row["generation_seed"]): row for row in members}
+        seeds = sorted(by_seed)
+        if len(seeds) < 2:
+            raise ValueError(f"Cross-seed rescue needs at least two generation seeds: {seeds}")
+        for baseline_seed in seeds:
+            for gain_seed in seeds:
+                if baseline_seed == gain_seed:
+                    continue
+                baseline_row, gain_row = by_seed[baseline_seed], by_seed[gain_seed]
+                pair_id = f"seed{baseline_seed}_to_seed{gain_seed}"
+                result[pair_id].append({
+                    "spec": baseline_row["spec"],
+                    "class_id": baseline_row["class_id"],
+                    "class_key": baseline_row["class_key"],
+                    "class_name": baseline_row["class_name"],
+                    "generation_seed": baseline_seed,
+                    "gain_generation_seed": gain_seed,
+                    "cross_seed_matched_baseline": baseline_row["i0g0_matched_label"],
+                    "cross_seed_content_gain": gain_row["i0g0_content_gain"],
+                    "cross_seed_raw_label_baseline": baseline_row["i0g0_label"],
+                    "cross_seed_raw_dcs_gain": gain_row["i0g0_raw_dcs_gain"],
+                })
+    return result
 
 
 def aggregate_relation_points(records, x_key, y_key):
@@ -298,6 +335,7 @@ def relation_definitions():
             "analysis": "dcs_rescue_primary",
             "regime": "i0g0",
             "probe": "",
+            "record_set": "standard",
             "x_key": "i0g0_matched_label",
             "y_key": "i0g0_content_gain",
             "expected": "negative",
@@ -306,8 +344,27 @@ def relation_definitions():
             "analysis": "dcs_rescue_raw_label_sensitivity",
             "regime": "i0g0",
             "probe": "",
+            "record_set": "standard",
             "x_key": "i0g0_label",
             "y_key": "i0g0_raw_dcs_gain",
+            "expected": "negative",
+        },
+        {
+            "analysis": "dcs_rescue_oldham",
+            "regime": "i0g0",
+            "probe": "",
+            "record_set": "standard",
+            "x_key": "i0g0_oldham_mean",
+            "y_key": "i0g0_content_gain",
+            "expected": "negative",
+        },
+        {
+            "analysis": "dcs_rescue_headroom_normalized",
+            "regime": "i0g0",
+            "probe": "",
+            "record_set": "standard",
+            "x_key": "i0g0_matched_label",
+            "y_key": "i0g0_headroom_normalized_content_gain",
             "expected": "negative",
         },
     ]
@@ -316,6 +373,7 @@ def relation_definitions():
             "analysis": "p3_correspondence_vs_downstream_value",
             "regime": regime,
             "probe": "",
+            "record_set": "standard",
             "x_key": "p3_correspondence_delta",
             "y_key": f"{regime}_correct_minus_shuffled",
             "expected": "positive",
@@ -326,6 +384,7 @@ def relation_definitions():
                 "analysis": "p4_source_pull_vs_downstream_value",
                 "regime": regime,
                 "probe": probe,
+                "record_set": "standard",
                 "x_key": f"p4_{regime}_{probe}_delta_pull",
                 "y_key": f"{regime}_correct_minus_shuffled",
                 "expected": "positive",
@@ -333,16 +392,36 @@ def relation_definitions():
     return rows
 
 
+def cross_seed_relation_definitions(cross_records):
+    definitions = []
+    for pair_id in sorted(cross_records):
+        definitions.append({
+            "analysis": "dcs_rescue_cross_seed",
+            "regime": "i0g0",
+            "probe": "",
+            "record_set": pair_id,
+            "x_key": "cross_seed_matched_baseline",
+            "y_key": "cross_seed_content_gain",
+            "expected": "negative",
+        })
+    return definitions
+
+
 def plot_relations(points_by_name, output_path):
     selected_names = [
-        "dcs_rescue_primary|i0g0|",
-        "dcs_rescue_raw_label_sensitivity|i0g0|",
-        "p3_correspondence_vs_downstream_value|i0g0|",
-        "p3_correspondence_vs_downstream_value|i1g0|",
-        "p4_source_pull_vs_downstream_value|i0g0|linear_probe",
-        "p4_source_pull_vs_downstream_value|i1g0|linear_probe",
+        "dcs_rescue_primary|i0g0||standard",
+        "dcs_rescue_cross_seed|i0g0||seed0_to_seed1",
+        "dcs_rescue_cross_seed|i0g0||seed1_to_seed0",
+        "dcs_rescue_oldham|i0g0||standard",
+        "dcs_rescue_headroom_normalized|i0g0||standard",
+        "p3_correspondence_vs_downstream_value|i0g0||standard",
+        "p4_source_pull_vs_downstream_value|i0g0|linear_probe|standard",
+        "p4_source_pull_vs_downstream_value|i1g0|linear_probe|standard",
     ]
-    figure, axes = plt.subplots(2, 3, figsize=(18, 10))
+    selected_names = [name for name in selected_names if name in points_by_name]
+    figure, axes = plt.subplots(2, 4, figsize=(22, 10))
+    for axis in axes.flat[len(selected_names):]:
+        axis.axis("off")
     for axis, name in zip(axes.flat, selected_names):
         payload = points_by_name[name]
         points, result, definition = payload["points"], payload["result"], payload["definition"]
@@ -351,7 +430,7 @@ def plot_relations(points_by_name, output_path):
             axis.scatter([row["x"] for row in subset], [row["y"] for row in subset], label=spec)
         axis.axhline(0, color="black", linestyle="--", linewidth=1)
         axis.set_title(
-            f"{definition['analysis']} {definition['regime']}\n"
+            f"{definition['analysis']} {definition['record_set']}\n"
             f"Spearman rho={result['value']:.3f}"
         )
         axis.set_xlabel(definition["x_key"])
@@ -381,21 +460,26 @@ def main():
     p4 = load_p4(Path(args.p4_run_dir) / "analysis" / "paired_effects_raw.csv")
     records = add_external_metrics(class_records, p3, p4)
     write_csv(output_dir / "class_generation_metrics.csv", records)
+    cross_records = build_cross_seed_records(records)
 
     relationship_rows = []
     point_rows = []
     points_by_name = {}
-    for definition in relation_definitions():
+    definitions = relation_definitions() + cross_seed_relation_definitions(cross_records)
+    record_sets = {"standard": records, **cross_records}
+    for definition in definitions:
+        selected_records = record_sets[definition["record_set"]]
         for method in ("pearson", "spearman"):
             result, points = hierarchical_correlation(
-                records, definition["x_key"], definition["y_key"], method,
+                selected_records, definition["x_key"], definition["y_key"], method,
                 args.bootstrap_samples, args.permutation_samples, rng,
                 definition["expected"],
             )
             relationship_rows.append({**definition, "correlation": method, **result})
             if method == "spearman":
                 name = "|".join([
-                    definition["analysis"], definition["regime"], definition.get("probe", "")
+                    definition["analysis"], definition["regime"], definition.get("probe", ""),
+                    definition["record_set"],
                 ])
                 points_by_name[name] = {
                     "points": points, "result": result, "definition": definition,
@@ -410,6 +494,20 @@ def main():
         "dcs_rescue": next(
             row for row in relationship_rows
             if row["analysis"] == "dcs_rescue_primary" and row["correlation"] == "spearman"
+        ),
+        "dcs_rescue_cross_seed": [
+            row for row in relationship_rows
+            if row["analysis"] == "dcs_rescue_cross_seed"
+            and row["correlation"] == "spearman"
+        ],
+        "dcs_rescue_oldham": next(
+            row for row in relationship_rows
+            if row["analysis"] == "dcs_rescue_oldham" and row["correlation"] == "spearman"
+        ),
+        "dcs_rescue_headroom_normalized": next(
+            row for row in relationship_rows
+            if row["analysis"] == "dcs_rescue_headroom_normalized"
+            and row["correlation"] == "spearman"
         ),
         "p3_correspondence_i0g0": next(
             row for row in relationship_rows

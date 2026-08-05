@@ -831,6 +831,12 @@ correspondence or P4 source-pull. Outputs are written to
 `summary/class_relationships/`; this analysis does not regenerate images or
 train classifiers.
 
+The DCS-rescue diagnostic additionally reports two disjoint generation-seed
+directions, Oldham's gain-versus-pair-mean correlation, and gain normalized by
+the matched-label accuracy headroom. These controls separate a genuine
+low-baseline rescue pattern from shared-baseline noise and bounded-accuracy
+ceiling effects.
+
 With four GPUs, the default scheduler runs two independent two-GPU classifier
 cells concurrently: GPUs `0,1` train one cell while GPUs `2,3` train the next.
 Each cell therefore retains the original two-classifier-seed protocol. Sparse

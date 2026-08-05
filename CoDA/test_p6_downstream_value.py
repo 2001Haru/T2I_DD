@@ -2,6 +2,7 @@ from prepare_p6_datasets import assemble
 import numpy as np
 
 from analyze_p6_class_relationships import (
+    build_cross_seed_records,
     correlation,
     hierarchical_correlation,
     rankdata,
@@ -101,3 +102,25 @@ def test_hierarchical_correlation_preserves_paired_negative_signal():
     assert result["value"] == -1.0
     assert len(points) == 8
     assert result["bootstrap_ci_upper"] < 0
+
+
+def test_cross_seed_records_do_not_reuse_baseline_in_gain():
+    rows = [
+        {
+            "spec": "imageA", "class_id": "n1", "class_key": "imageA:n1",
+            "class_name": "one", "generation_seed": 0,
+            "i0g0_matched_label": 20.0, "i0g0_content_gain": 8.0,
+            "i0g0_label": 19.0, "i0g0_raw_dcs_gain": 9.0,
+        },
+        {
+            "spec": "imageA", "class_id": "n1", "class_key": "imageA:n1",
+            "class_name": "one", "generation_seed": 1,
+            "i0g0_matched_label": 30.0, "i0g0_content_gain": 4.0,
+            "i0g0_label": 29.0, "i0g0_raw_dcs_gain": 5.0,
+        },
+    ]
+    cross = build_cross_seed_records(rows)
+    forward = cross["seed0_to_seed1"][0]
+    reverse = cross["seed1_to_seed0"][0]
+    assert (forward["cross_seed_matched_baseline"], forward["cross_seed_content_gain"]) == (20.0, 4.0)
+    assert (reverse["cross_seed_matched_baseline"], reverse["cross_seed_content_gain"]) == (30.0, 8.0)
