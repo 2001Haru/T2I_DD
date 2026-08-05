@@ -821,6 +821,16 @@ Partial classifier outputs are rejected by default. Set
 continue. Results and paired factorial contrasts are written under
 `trained_results/p6_downstream_value_runs/<RUN_ID>/summary/`.
 
+The resumed summary also performs hierarchical inference and two class-level
+mechanism checks using the existing P2/P3 and P4 artifacts. Overall contrasts
+bootstrap `spec -> generation seed` after averaging classifier repeats. Class
+correlations bootstrap `spec -> class -> generation seed` and use within-spec
+permutations. The primary tests are I0G0 Correct-DCS gain versus matched-label
+baseline accuracy, and Correct-minus-Shuffled downstream value versus P3 DCS
+correspondence or P4 source-pull. Outputs are written to
+`summary/class_relationships/`; this analysis does not regenerate images or
+train classifiers.
+
 With four GPUs, the default scheduler runs two independent two-GPU classifier
 cells concurrently: GPUs `0,1` train one cell while GPUs `2,3` train the next.
 Each cell therefore retains the original two-classifier-seed protocol. Sparse

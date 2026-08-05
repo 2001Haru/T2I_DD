@@ -1,4 +1,11 @@
 from prepare_p6_datasets import assemble
+import numpy as np
+
+from analyze_p6_class_relationships import (
+    correlation,
+    hierarchical_correlation,
+    rankdata,
+)
 from summarize_p6_downstream_value import contrast_definitions, paired_contrast
 
 
@@ -65,3 +72,32 @@ def test_matched_template_separates_style_from_caption_content():
     assert paired_contrast(
         results, "imageA", [0], definitions["i0g0_correct_minus_matched"]
     ) == [2, 2]
+
+
+def test_relationship_correlations_handle_ties_and_direction():
+    assert rankdata([3, 1, 1, 2]).tolist() == [4.0, 1.5, 1.5, 3.0]
+    assert correlation([1, 2, 3, 4], [4, 3, 2, 1], "pearson") == -1.0
+    assert correlation([1, 2, 2, 4], [4, 3, 3, 1], "spearman") == -1.0
+
+
+def test_hierarchical_correlation_preserves_paired_negative_signal():
+    records = []
+    for spec in ("imageA", "imageB"):
+        for class_index in range(4):
+            for generation_seed in (0, 1):
+                records.append({
+                    "spec": spec,
+                    "class_id": f"n{class_index}",
+                    "class_key": f"{spec}:n{class_index}",
+                    "class_name": str(class_index),
+                    "x": float(class_index),
+                    "y": float(10 - class_index),
+                    "generation_seed": generation_seed,
+                })
+    result, points = hierarchical_correlation(
+        records, "x", "y", "spearman", samples=100, permutations=100,
+        rng=np.random.default_rng(7), expected="negative",
+    )
+    assert result["value"] == -1.0
+    assert len(points) == 8
+    assert result["bootstrap_ci_upper"] < 0

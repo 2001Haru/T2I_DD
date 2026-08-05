@@ -9,6 +9,7 @@ SPECS="${SPECS:-imageA imageB imageC}"
 GENERATION_SEEDS="${GENERATION_SEEDS:-0 1}"
 P4_RUN_ID="${P4_RUN_ID:-p4_text_execution_v0}"
 P5_RUN_ID="${P5_RUN_ID:-p5_continuous_guidance_v0}"
+P2P3_RUN_ID="${P2P3_RUN_ID:-p2p3_language_cluster_v0}"
 RUN_ID="${P6_RUN_ID:-p6_downstream_value_v0}"
 MODEL_FOLDER="${MODEL_FOLDER:-/linxi/models/CoDA/SDXL-Refiner}"
 IMAGENET_VAL_FOLDER="${IMAGENET_VAL_FOLDER:-/linxi/dataset/imagenet/validation/val}"
@@ -31,6 +32,9 @@ RUN_MATCHED_GENERATION="${RUN_MATCHED_GENERATION:-true}"
 RUN_DATASET_ASSEMBLY="${RUN_DATASET_ASSEMBLY:-true}"
 RUN_DOWNSTREAM_TRAINING="${RUN_DOWNSTREAM_TRAINING:-true}"
 RUN_SUMMARY="${RUN_SUMMARY:-true}"
+RUN_CLASS_RELATIONSHIPS="${RUN_CLASS_RELATIONSHIPS:-true}"
+RELATIONSHIP_BOOTSTRAP_SAMPLES="${RELATIONSHIP_BOOTSTRAP_SAMPLES:-10000}"
+RELATIONSHIP_PERMUTATION_SAMPLES="${RELATIONSHIP_PERMUTATION_SAMPLES:-10000}"
 RESUME="${RESUME:-false}"
 ARCHIVE_INCOMPLETE_FILLERS="${ARCHIVE_INCOMPLETE_FILLERS:-false}"
 ARCHIVE_INCOMPLETE_MATCHED_GENERATION="${ARCHIVE_INCOMPLETE_MATCHED_GENERATION:-false}"
@@ -43,6 +47,7 @@ fi
 
 P4_ROOT="./results/p4_text_execution_runs/${P4_RUN_ID}"
 P5_ROOT="./results/p5_continuous_guidance_runs/${P5_RUN_ID}"
+P2P3_ROOT="./results/p2p3_language_cluster_runs/${P2P3_RUN_ID}"
 SOURCE_MANIFEST="${P5_ROOT}/generation_manifest.json"
 PREPARED_DIR="${P4_ROOT}/prepared"
 META_ROOT="./results/p6_downstream_value_runs/${RUN_ID}"
@@ -470,6 +475,25 @@ if [[ "$RUN_SUMMARY" == "true" ]]; then
     python summarize_p6_downstream_value.py \
         --trained-root "$SAVE_ROOT" --output-dir "$SUMMARY_DIR" \
         --specs "${spec_array[@]}" --generation-seeds "${seed_array[@]}"
+    if [[ "$RUN_CLASS_RELATIONSHIPS" == "true" ]]; then
+        for artifact in \
+            "${P2P3_ROOT}/dcs_correspondence_per_class.csv" \
+            "${P4_ROOT}/analysis/paired_effects_raw.csv"; do
+            if [[ ! -f "$artifact" ]]; then
+                echo "Missing P6 relationship-analysis artifact: ${artifact}" >&2
+                exit 1
+            fi
+        done
+        python analyze_p6_class_relationships.py \
+            --trained-root "$SAVE_ROOT" \
+            --p2p3-run-dir "$P2P3_ROOT" \
+            --p4-run-dir "$P4_ROOT" \
+            --output-dir "${SUMMARY_DIR}/class_relationships" \
+            --specs "${spec_array[@]}" \
+            --generation-seeds "${seed_array[@]}" \
+            --bootstrap-samples "$RELATIONSHIP_BOOTSTRAP_SAMPLES" \
+            --permutation-samples "$RELATIONSHIP_PERMUTATION_SAMPLES"
+    fi
     cp "${SUMMARY_DIR}/summary.json" "$COMPLETE_FILE"
 fi
 
