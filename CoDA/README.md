@@ -825,7 +825,9 @@ With four GPUs, the default scheduler runs two independent two-GPU classifier
 cells concurrently: GPUs `0,1` train one cell while GPUs `2,3` train the next.
 Each cell therefore retains the original two-classifier-seed protocol. Sparse
 filler generation defaults to GPU 0 because it generates only the omitted
-cluster slots. The scheduling can be overridden without changing the run:
+cluster slots. On resume, completed cells are removed before scheduling so
+they do not occupy a GPU group while pending controls run. The scheduling can
+be overridden without changing the run:
 
 ```bash
 TRAIN_GPU_GROUPS="0,1 2,3" \

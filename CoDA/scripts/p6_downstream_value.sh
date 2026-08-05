@@ -414,15 +414,29 @@ for group in "${gpu_groups[@]}"; do
 done
 
 cells=()
+reused_cells=0
 for spec in $SPECS; do
     for seed in $GENERATION_SEEDS; do
         for regime in i0g0 i1g0 i0g1 i1g1; do
             for prompt in label matched_label correct shuffled; do
-                cells+=("${spec}|${seed}|${regime}|${prompt}")
+                condition="${regime}_${prompt}"
+                result="${SAVE_ROOT}/${spec}/seed_${seed}/${condition}-resnet_ap/per_class_accuracy_all_seeds.json"
+                if [[ -f "$result" ]]; then
+                    require_completed_result "$result" || {
+                        echo "Malformed completed result: ${result}" >&2
+                        exit 1
+                    }
+                    echo "==> Reusing completed P6 classifier ${spec}/${condition}, generation seed ${seed}"
+                    reused_cells=$((reused_cells + 1))
+                else
+                    cells+=("${spec}|${seed}|${regime}|${prompt}")
+                fi
             done
         done
     done
 done
+
+echo "==> P6 classifier schedule: ${#cells[@]} pending, ${reused_cells} completed"
 
 cell_index=0
 while [[ "$cell_index" -lt "${#cells[@]}" ]]; do
