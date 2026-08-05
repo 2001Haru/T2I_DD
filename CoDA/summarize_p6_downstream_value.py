@@ -11,7 +11,7 @@ import numpy as np
 
 
 REGIMES = ("i0g0", "i1g0", "i0g1", "i1g1")
-PROMPTS = ("label", "correct", "shuffled")
+PROMPTS = ("label", "matched_label", "correct", "shuffled")
 
 
 def parse_args():
@@ -97,8 +97,14 @@ def paired_contrast(results, spec, generation_seeds, terms, class_id=None):
 def contrast_definitions():
     definitions = {}
     for regime in REGIMES:
+        definitions[f"{regime}_matched_minus_label"] = (
+            (1, regime, "matched_label"), (-1, regime, "label")
+        )
         definitions[f"{regime}_correct_minus_label"] = (
             (1, regime, "correct"), (-1, regime, "label")
+        )
+        definitions[f"{regime}_correct_minus_matched"] = (
+            (1, regime, "correct"), (-1, regime, "matched_label")
         )
         definitions[f"{regime}_shuffled_minus_correct"] = (
             (1, regime, "shuffled"), (-1, regime, "correct")
@@ -133,6 +139,28 @@ def contrast_definitions():
                 (-1, "i0g1", "shuffled"), (1, "i0g1", "correct"),
                 (1, "i0g0", "shuffled"), (-1, "i0g0", "correct"),
             ),
+            "init_x_dcs_content_g0": (
+                (1, "i1g0", "correct"), (-1, "i1g0", "matched_label"),
+                (-1, "i0g0", "correct"), (1, "i0g0", "matched_label"),
+            ),
+            "init_x_dcs_content_g1": (
+                (1, "i1g1", "correct"), (-1, "i1g1", "matched_label"),
+                (-1, "i0g1", "correct"), (1, "i0g1", "matched_label"),
+            ),
+            "guidance_x_dcs_content_i0": (
+                (1, "i0g1", "correct"), (-1, "i0g1", "matched_label"),
+                (-1, "i0g0", "correct"), (1, "i0g0", "matched_label"),
+            ),
+            "guidance_x_dcs_content_i1": (
+                (1, "i1g1", "correct"), (-1, "i1g1", "matched_label"),
+                (-1, "i1g0", "correct"), (1, "i1g0", "matched_label"),
+            ),
+            "init_x_guidance_x_dcs_content": (
+                (1, "i1g1", "correct"), (-1, "i1g1", "matched_label"),
+                (-1, "i1g0", "correct"), (1, "i1g0", "matched_label"),
+                (-1, "i0g1", "correct"), (1, "i0g1", "matched_label"),
+                (1, "i0g0", "correct"), (-1, "i0g0", "matched_label"),
+            ),
         }
     )
     return definitions
@@ -148,12 +176,14 @@ def write_csv(path, rows):
 def plot_prompt_effects(summary, output_path, specs):
     figure, axes = plt.subplots(1, len(specs), figsize=(6 * len(specs), 5), squeeze=False)
     x = np.arange(len(REGIMES))
-    width = 0.36
+    width = 0.25
     for axis, spec in zip(axes[0], specs):
-        correct = [summary[spec][f"{regime}_correct_minus_label"]["mean"] for regime in REGIMES]
+        matched = [summary[spec][f"{regime}_matched_minus_label"]["mean"] for regime in REGIMES]
+        correct = [summary[spec][f"{regime}_correct_minus_matched"]["mean"] for regime in REGIMES]
         shuffled = [summary[spec][f"{regime}_shuffled_minus_correct"]["mean"] for regime in REGIMES]
-        axis.bar(x - width / 2, correct, width, label="Correct - Label")
-        axis.bar(x + width / 2, shuffled, width, label="Shuffled - Correct")
+        axis.bar(x - width, matched, width, label="Matched - Raw label")
+        axis.bar(x, correct, width, label="Correct - Matched")
+        axis.bar(x + width, shuffled, width, label="Shuffled - Correct")
         axis.axhline(0, color="black", linestyle="--", linewidth=1)
         axis.set_xticks(x, REGIMES)
         axis.set_title(spec)
@@ -231,7 +261,7 @@ def main():
         "paired_contrasts": dict(contrasts),
         "interpretation_boundary": (
             "P6 measures downstream set value for complete IPC=10 datasets. Clusters excluded "
-            "from P4/P5 receive the same label-generated neutral filler across all three prompt "
+            "from P4/P5 receive the same label-generated neutral filler across all prompt "
             "conditions within each visual regime and seed."
         ),
     }

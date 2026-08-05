@@ -27,28 +27,36 @@ FILLER_CUDA_VISIBLE_DEVICES="${FILLER_CUDA_VISIBLE_DEVICES:-0}"
 TRAIN_WORKERS="${P6_TRAIN_WORKERS:-4}"
 VAL_WORKERS="${P6_VAL_WORKERS:-2}"
 RUN_FILLER_GENERATION="${RUN_FILLER_GENERATION:-true}"
+RUN_MATCHED_GENERATION="${RUN_MATCHED_GENERATION:-true}"
 RUN_DATASET_ASSEMBLY="${RUN_DATASET_ASSEMBLY:-true}"
 RUN_DOWNSTREAM_TRAINING="${RUN_DOWNSTREAM_TRAINING:-true}"
 RUN_SUMMARY="${RUN_SUMMARY:-true}"
 RESUME="${RESUME:-false}"
 ARCHIVE_INCOMPLETE_FILLERS="${ARCHIVE_INCOMPLETE_FILLERS:-false}"
+ARCHIVE_INCOMPLETE_MATCHED_GENERATION="${ARCHIVE_INCOMPLETE_MATCHED_GENERATION:-false}"
 ARCHIVE_INCOMPLETE_DATASETS="${ARCHIVE_INCOMPLETE_DATASETS:-false}"
 ARCHIVE_INCOMPLETE_CLASSIFIERS="${ARCHIVE_INCOMPLETE_CLASSIFIERS:-false}"
+MATCHED_LABEL_TEMPLATE="${P6_MATCHED_LABEL_TEMPLATE:-}"
+if [[ -z "$MATCHED_LABEL_TEMPLATE" ]]; then
+    MATCHED_LABEL_TEMPLATE='An natural photo of a {class_name}, centered object.'
+fi
 
 P4_ROOT="./results/p4_text_execution_runs/${P4_RUN_ID}"
 P5_ROOT="./results/p5_continuous_guidance_runs/${P5_RUN_ID}"
 SOURCE_MANIFEST="${P5_ROOT}/generation_manifest.json"
 PREPARED_DIR="${P4_ROOT}/prepared"
 META_ROOT="./results/p6_downstream_value_runs/${RUN_ID}"
+MATCHED_SOURCE_MANIFEST="${META_ROOT}/matched_source_manifest.json"
 FILLER_MANIFEST="${META_ROOT}/filler_manifest.json"
 DATASET_ROOT="${META_ROOT}/datasets"
 DATASET_MANIFEST="${DATASET_ROOT}/dataset_manifest.json"
+MATCHED_DATASET_MANIFEST="${DATASET_ROOT}/matched_dataset_manifest.json"
 SAVE_ROOT="./trained_results/p6_downstream_value_runs/${RUN_ID}"
 SUMMARY_DIR="${SAVE_ROOT}/summary"
 CONFIG_FILE="${META_ROOT}/run_config.txt"
 COMPLETE_FILE="${META_ROOT}/complete.json"
 
-CONFIG_CONTENT="SPECS=${SPECS}
+BASE_CONFIG_CONTENT="SPECS=${SPECS}
 GENERATION_SEEDS=${GENERATION_SEEDS}
 P4_RUN_ID=${P4_RUN_ID}
 P5_RUN_ID=${P5_RUN_ID}
@@ -64,6 +72,8 @@ CFG=${CFG}
 GUIDANCE_GAMMA=${GUIDANCE_GAMMA}
 PROTOTYPE_INIT_STRENGTH=${PROTOTYPE_INIT_STRENGTH}
 EVAL_SEED=${EVAL_SEED}"
+CONFIG_CONTENT="${BASE_CONFIG_CONTENT}
+MATCHED_LABEL_TEMPLATE=${MATCHED_LABEL_TEMPLATE}"
 
 for required in \
     "${P4_ROOT}/complete.json" \
@@ -80,7 +90,14 @@ if [[ -e "$META_ROOT" ]]; then
         echo "P6 run exists; set RESUME=true or choose another P6_RUN_ID: ${RUN_ID}" >&2
         exit 1
     fi
-    if [[ ! -f "$CONFIG_FILE" ]] || [[ "$(<"$CONFIG_FILE")" != "$CONFIG_CONTENT" ]]; then
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo "P6 resume configuration is missing: ${CONFIG_FILE}" >&2
+        exit 1
+    fi
+    if [[ "$(<"$CONFIG_FILE")" == "$BASE_CONFIG_CONTENT" ]]; then
+        printf '%s\n' "$CONFIG_CONTENT" > "$CONFIG_FILE"
+        echo "==> Migrated P6 configuration to include the matched-label control"
+    elif [[ "$(<"$CONFIG_FILE")" != "$CONFIG_CONTENT" ]]; then
         echo "P6 resume configuration differs from ${CONFIG_FILE}" >&2
         exit 1
     fi
@@ -173,6 +190,64 @@ generate_filler() {
     printf '%s\n' "$output_dir"
 }
 
+expected_eligible() {
+    jq '[.[] | length] | add' "${PREPARED_DIR}/${1}_cluster_indices.json"
+}
+
+validate_matched_source() {
+    local spec=$1 directory=$2 expected actual
+    expected="$(expected_eligible "$spec")"
+    actual="$(find "$directory" -mindepth 2 -maxdepth 2 -type f \
+        -path '*/n[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/*.png' | wc -l)"
+    [[ "$actual" -eq "$expected" ]] && \
+        compgen -G "${directory}/prompt_records_gpu*.json" > /dev/null
+}
+
+generate_matched_source() {
+    local spec=$1 seed=$2 regime=$3 gamma=0.0
+    [[ "$regime" == *g1 ]] && gamma="$GUIDANCE_GAMMA"
+    local dirname="p6_downstream_value_runs/${RUN_ID}/matched_sources/seed_${seed}/${regime}"
+    local output_dir="$(experiment_root "$spec" "$gamma")/${dirname}"
+    if [[ -e "$output_dir" ]]; then
+        if validate_matched_source "$spec" "$output_dir"; then
+            echo "==> Reusing matched-label source ${spec}/${regime}, generation seed ${seed}" >&2
+            printf '%s\n' "$output_dir"
+            return
+        fi
+        if [[ "$ARCHIVE_INCOMPLETE_MATCHED_GENERATION" != "true" ]]; then
+            echo "Incomplete matched-label generation exists: ${output_dir}" >&2
+            echo "Set ARCHIVE_INCOMPLETE_MATCHED_GENERATION=true to archive and regenerate it." >&2
+            exit 1
+        fi
+        local archive="${META_ROOT}/incomplete_matched_archives/${spec}/seed_${seed}/${regime}/$(date -u +%Y%m%dT%H%M%SZ)"
+        mkdir -p "$(dirname "$archive")"
+        mv -- "$output_dir" "$archive"
+    fi
+    if [[ "$RUN_MATCHED_GENERATION" != "true" ]]; then
+        echo "Missing matched-label source with RUN_MATCHED_GENERATION=false: ${output_dir}" >&2
+        exit 1
+    fi
+    local args=(
+        --local_model_path "$MODEL_FOLDER" --spec "$spec" --IPC "$IPC"
+        --n_neighbors "$N_NEIGHBORS" --min_cluster_size "$MIN_CLUSTER_SIZE"
+        --sample_step "$SAMPLE_STEP" --denoising_factor "$DF"
+        --guideTPercent "$GTP" --cfg_guidance_scale "$CFG"
+        --CoDA_guidance_scale "$gamma" --seed "$seed" --generate_images
+        --experiment_method "p6_${regime}_matched_label"
+        --generated_images_dirname "$dirname"
+        --generation_cluster_indices_file "${PREPARED_DIR}/${spec}_cluster_indices.json"
+        --base_prompt_template "$MATCHED_LABEL_TEMPLATE"
+    )
+    [[ "$regime" == i1* ]] && args+=(--prototype_initialization_strength "$PROTOTYPE_INIT_STRENGTH")
+    echo "==> Generating matched-label source ${spec}/${regime}, generation seed ${seed}" >&2
+    python CoDA_main.py "${args[@]}" >&2
+    validate_matched_source "$spec" "$output_dir" || {
+        echo "Matched-label generation is incomplete: ${output_dir}" >&2
+        exit 1
+    }
+    printf '%s\n' "$output_dir"
+}
+
 validate_complete_dataset() {
     local directory=$1
     local classes images invalid
@@ -202,6 +277,20 @@ for spec in $SPECS; do
 done
 printf '%s\n' "$filler_manifest" > "$FILLER_MANIFEST"
 
+matched_source_manifest='[]'
+for spec in $SPECS; do
+    for seed in $GENERATION_SEEDS; do
+        for regime in i0g0 i1g0 i0g1 i1g1; do
+            dataset="$(generate_matched_source "$spec" "$seed" "$regime")"
+            matched_source_manifest="$(jq --arg spec "$spec" --argjson seed "$seed" \
+                --arg regime "$regime" --arg dataset "$dataset" \
+                '. + [{spec:$spec,generation_seed:$seed,visual_mode:$regime,prompt_condition:"matched_label",dataset_dir:$dataset}]' \
+                <<< "$matched_source_manifest")"
+        done
+    done
+done
+printf '%s\n' "$matched_source_manifest" > "$MATCHED_SOURCE_MANIFEST"
+
 if [[ ! -f "$DATASET_MANIFEST" ]]; then
     if [[ -e "$DATASET_ROOT" ]]; then
         if [[ "$ARCHIVE_INCOMPLETE_DATASETS" != "true" ]]; then
@@ -222,13 +311,28 @@ if [[ ! -f "$DATASET_MANIFEST" ]]; then
     python prepare_p6_datasets.py \
         --source-manifest "$SOURCE_MANIFEST" --filler-manifest "$FILLER_MANIFEST" \
         --output-root "$DATASET_ROOT" --specs "${spec_array[@]}" \
-        --generation-seeds "${seed_array[@]}" --ipc "$IPC"
+        --generation-seeds "${seed_array[@]}" --prompts label correct shuffled --ipc "$IPC"
+fi
+
+if [[ ! -f "$MATCHED_DATASET_MANIFEST" ]]; then
+    if [[ "$RUN_DATASET_ASSEMBLY" != "true" ]]; then
+        echo "Matched-label datasets are missing and RUN_DATASET_ASSEMBLY=false." >&2
+        exit 1
+    fi
+    read -r -a spec_array <<< "$SPECS"
+    read -r -a seed_array <<< "$GENERATION_SEEDS"
+    python prepare_p6_datasets.py \
+        --source-manifest "$MATCHED_SOURCE_MANIFEST" --filler-manifest "$FILLER_MANIFEST" \
+        --output-root "$DATASET_ROOT" --specs "${spec_array[@]}" \
+        --generation-seeds "${seed_array[@]}" --prompts matched_label --ipc "$IPC" \
+        --output-manifest "$MATCHED_DATASET_MANIFEST" \
+        --audit-output "${DATASET_ROOT}/matched_assembly_audit.json"
 fi
 
 for spec in $SPECS; do
     for seed in $GENERATION_SEEDS; do
         for regime in i0g0 i1g0 i0g1 i1g1; do
-            for prompt in label correct shuffled; do
+            for prompt in label matched_label correct shuffled; do
                 dataset_dir="${DATASET_ROOT}/${spec}/seed_${seed}/${regime}_${prompt}"
                 validate_complete_dataset "$dataset_dir" || {
                     echo "P6 dataset validation failed: ${dataset_dir}" >&2
@@ -313,7 +417,7 @@ cells=()
 for spec in $SPECS; do
     for seed in $GENERATION_SEEDS; do
         for regime in i0g0 i1g0 i0g1 i1g1; do
-            for prompt in label correct shuffled; do
+            for prompt in label matched_label correct shuffled; do
                 cells+=("${spec}|${seed}|${regime}|${prompt}")
             done
         done

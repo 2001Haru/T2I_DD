@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 REGIMES = ("i0g0", "i1g0", "i0g1", "i1g1")
-PROMPTS = ("label", "correct", "shuffled")
+DEFAULT_PROMPTS = ("label", "matched_label", "correct", "shuffled")
 
 
 def parse_args():
@@ -18,7 +18,10 @@ def parse_args():
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--specs", nargs="+", required=True)
     parser.add_argument("--generation-seeds", nargs="+", type=int, required=True)
+    parser.add_argument("--prompts", nargs="+", default=list(DEFAULT_PROMPTS))
     parser.add_argument("--ipc", type=int, default=10)
+    parser.add_argument("--output-manifest", default=None)
+    parser.add_argument("--audit-output", default=None)
     return parser.parse_args()
 
 
@@ -35,6 +38,8 @@ def load_manifest(path, key_fields):
 
 def link_or_copy(source, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        destination.unlink()
     try:
         os.link(source, destination)
     except OSError:
@@ -101,7 +106,7 @@ def main():
         for spec in args.specs
         for seed in args.generation_seeds
         for regime in REGIMES
-        for prompt in PROMPTS
+        for prompt in args.prompts
     }
     missing_source = expected_source - set(source)
     if missing_source:
@@ -114,10 +119,6 @@ def main():
         if filler_key not in filler:
             raise ValueError(f"Filler manifest lacks {filler_key}")
         destination = output_root / spec / f"seed_{seed}" / f"{regime}_{prompt}"
-        if destination.exists():
-            raise FileExistsError(
-                f"Refusing to merge into existing P6 dataset: {destination}"
-            )
         details = assemble(source[(spec, seed, regime, prompt)], filler[filler_key], destination, args.ipc)
         output_manifest.append(
             {
@@ -141,10 +142,14 @@ def main():
         )
 
     output_root.mkdir(parents=True, exist_ok=True)
-    (output_root / "dataset_manifest.json").write_text(
+    manifest_path = Path(args.output_manifest) if args.output_manifest else output_root / "dataset_manifest.json"
+    audit_path = Path(args.audit_output) if args.audit_output else output_root / "assembly_audit.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
         json.dumps(output_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    (output_root / "assembly_audit.json").write_text(
+    audit_path.write_text(
         json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     print(f"Assembled {len(output_manifest)} complete P6 datasets in {output_root}")

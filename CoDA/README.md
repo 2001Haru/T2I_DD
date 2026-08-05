@@ -795,7 +795,7 @@ memory, but the default remains `1` for constrained V100 servers.
 
 After completed `p4_text_execution_v0` and `p5_continuous_guidance_v0` runs,
 train the downstream classifier on all four visual-injection regimes crossed
-with Label, Correct DCS, and Shuffled DCS:
+with raw Label, matched-template Label, Correct DCS, and Shuffled DCS:
 
 ```bash
 P6_RUN_ID=p6_downstream_value_v0 \
@@ -804,11 +804,12 @@ bash scripts/p6_downstream_value.sh
 
 P4/P5 omit probe-ineligible sparse clusters. P6 restores a complete IPC=10
 dataset by generating each missing cluster once with the Label condition and
-hard-linking that same neutral filler into all three prompt arms within the
+hard-linking that same neutral filler into all four prompt arms within the
 same visual regime and generation seed. This keeps the prompt comparison
 paired without assigning an unvalidated DCS caption to the sparse cluster.
 
-The 72 classifier cells are resumable. Re-run with:
+The original 72 classifier cells and 24 matched-template controls are
+resumable. Re-run with:
 
 ```bash
 P6_RUN_ID=p6_downstream_value_v0 RESUME=true \
@@ -833,7 +834,16 @@ P6_RUN_ID=p6_downstream_value_v0 \
 bash scripts/p6_downstream_value.sh
 ```
 
-On a two-GPU machine, use `TRAIN_GPU_GROUPS="0,1"`.
+On a two-GPU machine, resume with:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1 \
+TRAIN_GPU_GROUPS="0,1" \
+FILLER_CUDA_VISIBLE_DEVICES=0 \
+P6_RUN_ID=p6_downstream_value_v0 \
+RESUME=true \
+bash scripts/p6_downstream_value.sh
+```
 
 The four-GPU scheduler defaults to four training-loader workers and two
 validation-loader workers per GPU process (`P6_TRAIN_WORKERS=4` and

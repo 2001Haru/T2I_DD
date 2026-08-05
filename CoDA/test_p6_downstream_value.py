@@ -21,8 +21,13 @@ def test_assemble_uses_neutral_filler(tmp_path):
     assert audit["n00000001"]["neutral_filler_indices"] == [1]
 
 
-def payload(label, correct, shuffled):
-    values = {"label": label, "correct": correct, "shuffled": shuffled}
+def payload(label, correct, shuffled, matched_label=None):
+    values = {
+        "label": label,
+        "matched_label": label if matched_label is None else matched_label,
+        "correct": correct,
+        "shuffled": shuffled,
+    }
     return {
         prompt: {
             "overall_top1": [score, score + 1],
@@ -46,3 +51,17 @@ def test_three_way_contrast_sign():
             results[("imageA", 0, regime, prompt)] = item
     terms = contrast_definitions()["init_x_guidance_x_correct"]
     assert paired_contrast(results, "imageA", [0], terms) == [3, 3]
+
+
+def test_matched_template_separates_style_from_caption_content():
+    results = {}
+    for regime in ("i0g0", "i1g0", "i0g1", "i1g1"):
+        for prompt, item in payload(10, 16, 16, matched_label=14).items():
+            results[("imageA", 0, regime, prompt)] = item
+    definitions = contrast_definitions()
+    assert paired_contrast(
+        results, "imageA", [0], definitions["i0g0_matched_minus_label"]
+    ) == [4, 4]
+    assert paired_contrast(
+        results, "imageA", [0], definitions["i0g0_correct_minus_matched"]
+    ) == [2, 2]
