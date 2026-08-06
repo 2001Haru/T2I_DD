@@ -250,6 +250,9 @@ class LossBins:
             })
         return rows
 
+    def has_samples(self):
+        return bool(self.count.sum().item())
+
 
 def collate(examples):
     return {
@@ -463,6 +466,16 @@ def main():
                     checkpoint_limit(output_dir, args.checkpoints_total_limit)
 
         bins = epoch_bins.reduce_payload(accelerator)
+        if interval_bins.has_samples():
+            payload = {
+                "epoch": epoch,
+                "global_step": global_step,
+                "interval_kind": "epoch_tail",
+                "bins": interval_bins.reduce_payload(accelerator),
+            }
+            if accelerator.is_main_process:
+                append_jsonl(output_dir / "timestep_loss_intervals.jsonl", payload)
+            interval_bins.reset()
         if accelerator.is_main_process:
             for row in bins:
                 row.update({"epoch": epoch, "global_step": global_step})

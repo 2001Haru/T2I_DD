@@ -16,13 +16,22 @@ def main():
         with path.open("r", encoding="utf-8") as handle:
             records = list(csv.DictReader(handle))
         epochs = sorted({int(row["epoch"]) for row in records})
+        epoch_samples = {
+            epoch: sum(int(row["samples"]) for row in records if int(row["epoch"]) == epoch)
+            for epoch in epochs
+        }
+        reference_samples = max(epoch_samples.values())
+        complete_epochs = [
+            epoch for epoch in epochs if epoch_samples[epoch] >= 0.9 * reference_samples
+        ]
         losses = []
-        for epoch in epochs:
+        for epoch in complete_epochs:
             selected = [row for row in records if int(row["epoch"]) == epoch and row["loss"]]
             count = sum(int(row["samples"]) for row in selected)
             losses.append(sum(float(row["loss"]) * int(row["samples"]) for row in selected) / count)
-        axes[0].plot(epochs, losses, marker="o", label=mode)
-        final = [row for row in records if int(row["epoch"]) == epochs[-1] and row["loss"]]
+        axes[0].plot(complete_epochs, losses, marker="o", label=mode)
+        final_epoch = complete_epochs[-1]
+        final = [row for row in records if int(row["epoch"]) == final_epoch and row["loss"]]
         centers = [(int(row["timestep_low"]) + int(row["timestep_high"])) / 2 for row in final]
         axes[1].plot(centers, [float(row["loss"]) for row in final], marker="o", label=mode)
     axes[0].set(title="Training loss by epoch", xlabel="Epoch", ylabel="MSE")
