@@ -1,0 +1,8 @@
+diffusers>=0.30,<0.39
+transformers>=4.40,<5
+accelerate>=0.30
+safetensors
+torchvision
+Pillow
+numpy<2
+matplotlib
