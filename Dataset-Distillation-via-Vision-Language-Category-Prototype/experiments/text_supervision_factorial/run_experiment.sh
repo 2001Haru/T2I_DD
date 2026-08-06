@@ -36,6 +36,8 @@ MAIN_PROCESS_PORT="${MAIN_PROCESS_PORT:-29500}"
 RESUME="${RESUME:-false}"
 BUILD_PROTOTYPES="${BUILD_PROTOTYPES:-true}"
 TRAIN="${TRAIN:-true}"
+TRAIN_ROWS="${TRAIN_ROWS:-label_ft unpaired_ft matched_ft}"
+TRAIN_ONLY="${TRAIN_ONLY:-false}"
 GENERATE="${GENERATE:-true}"
 EVALUATE="${EVALUATE:-true}"
 SUMMARIZE="${SUMMARIZE:-$EVALUATE}"
@@ -95,7 +97,7 @@ else
   mv "$CONFIG.new" "$CONFIG"
 fi
 
-if [[ "$BUILD_PROTOTYPES" == "true" && ! -f "$PROTOTYPE_PATH" ]]; then
+if [[ "$TRAIN_ONLY" != "true" && "$BUILD_PROTOTYPES" == "true" && ! -f "$PROTOTYPE_PATH" ]]; then
   (
     cd "$DISTILLATION_DIR"
     python gen_prototype.py \
@@ -107,7 +109,9 @@ if [[ "$BUILD_PROTOTYPES" == "true" && ! -f "$PROTOTYPE_PATH" ]]; then
       --metajson_file "$CAPTION_FILE" --threshold 0.7 --tpk 30
   )
 fi
-[[ -f "$PROTOTYPE_PATH" && -f "$DCS_PATH" ]] || { echo "Missing prototype/DCS artifacts" >&2; exit 1; }
+if [[ "$TRAIN_ONLY" != "true" ]]; then
+  [[ -f "$PROTOTYPE_PATH" && -f "$DCS_PATH" ]] || { echo "Missing prototype/DCS artifacts" >&2; exit 1; }
+fi
 
 train_mode() {
   local row="$1"
@@ -144,9 +148,18 @@ train_mode() {
 }
 
 if [[ "$TRAIN" == "true" ]]; then
-  train_mode label_ft label
-  train_mode unpaired_ft unpaired
-  train_mode matched_ft matched
+  for row in $TRAIN_ROWS; do
+    case "$row" in
+      label_ft) train_mode label_ft label ;;
+      unpaired_ft) train_mode unpaired_ft unpaired ;;
+      matched_ft) train_mode matched_ft matched ;;
+      *) echo "Unknown TRAIN_ROWS entry: $row" >&2; exit 1 ;;
+    esac
+  done
+fi
+if [[ "$TRAIN_ONLY" == "true" ]]; then
+  echo "Requested checkpoint training complete: $TRAIN_ROWS"
+  exit 0
 fi
 for mode in label_ft unpaired_ft matched_ft; do
   [[ -f "$MODEL_ROOT/$mode/model_index.json" ]] || { echo "Missing model: $MODEL_ROOT/$mode" >&2; exit 1; }

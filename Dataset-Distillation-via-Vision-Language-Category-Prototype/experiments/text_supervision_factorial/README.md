@@ -65,6 +65,8 @@ MAX_PARALLEL_EVALS=2 \
 bash experiments/text_supervision_factorial/run_experiment.sh
 ```
 
+For one A100, use batch 4 and accumulation 8. To distribute independent checkpoints over separate nodes, set `TRAIN_ROWS` and `TRAIN_ONLY=true`; training-only jobs do not build prototype artifacts. Copy or link the resulting `models/<row>` directories into one aggregation run before generation.
+
 Set `TRAIN=false`, `GENERATE=false`, or `EVALUATE=false` to restart only later stages. A strict `run_config.txt` prevents mixing incompatible paths or settings.
 
 ## Loss audit
