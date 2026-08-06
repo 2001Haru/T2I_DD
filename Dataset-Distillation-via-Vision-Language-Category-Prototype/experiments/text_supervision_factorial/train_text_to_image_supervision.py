@@ -16,6 +16,7 @@ from PIL import Image, ImageOps
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from transformers import CLIPTextModel, CLIPTokenizer
+from tqdm.auto import tqdm
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -52,7 +53,10 @@ class LocalEMAModel:
             raise ValueError("EMA parameter count changed during training")
         self.optimization_step += 1
         one_minus_decay = 1.0 - self.get_decay()
-        for shadow, parameter in zip(self.shadow_params, parameters):
+        for index, (shadow, parameter) in enumerate(zip(self.shadow_params, parameters)):
+            if shadow.device != parameter.device or shadow.dtype != parameter.dtype:
+                shadow = shadow.to(device=parameter.device, dtype=parameter.dtype)
+                self.shadow_params[index] = shadow
             if parameter.requires_grad:
                 shadow.sub_(one_minus_decay * (shadow - parameter.detach()))
             else:
@@ -78,10 +82,18 @@ class LocalEMAModel:
         }
 
     def load_state_dict(self, state_dict):
+        target_devices = [parameter.device for parameter in self.shadow_params]
+        target_dtypes = [parameter.dtype for parameter in self.shadow_params]
         self.decay = float(state_dict["decay"])
         self.min_decay = float(state_dict["min_decay"])
         self.optimization_step = int(state_dict["optimization_step"])
-        self.shadow_params = [parameter.detach().clone() for parameter in state_dict["shadow_params"]]
+        loaded = state_dict["shadow_params"]
+        if len(loaded) != len(target_devices):
+            raise ValueError("EMA checkpoint parameter count differs from the current UNet")
+        self.shadow_params = [
+            parameter.detach().to(device=device, dtype=dtype).clone()
+            for parameter, device, dtype in zip(loaded, target_devices, target_dtypes)
+        ]
 
 
 def parse_args():
@@ -366,6 +378,8 @@ def main():
             resume_path = Path(args.resume_from_checkpoint)
         if resume_path:
             accelerator.load_state(str(resume_path))
+            if ema is not None:
+                ema.to(accelerator.device)
             global_step = int(resume_path.name.split("-")[-1])
             first_epoch = global_step // updates_per_epoch
             resume_batches = (global_step % updates_per_epoch) * args.gradient_accumulation_steps
@@ -389,6 +403,13 @@ def main():
     if accelerator.is_main_process and existing_epoch_path.is_file():
         with existing_epoch_path.open("r", encoding="utf-8", newline="") as handle:
             epoch_rows = list(csv.DictReader(handle))
+    progress_bar = tqdm(
+        total=max_steps,
+        initial=global_step,
+        disable=not accelerator.is_local_main_process,
+        desc=f"{args.supervision} optimizer steps",
+        dynamic_ncols=True,
+    )
     for epoch in range(first_epoch, args.num_train_epochs):
         dataset.set_epoch(epoch)
         if accelerator.is_main_process:
@@ -424,6 +445,12 @@ def main():
 
             if accelerator.sync_gradients:
                 global_step += 1
+                progress_bar.update(1)
+                progress_bar.set_postfix(
+                    epoch=epoch + 1,
+                    loss=f"{loss.detach().item():.4f}",
+                    lr=f"{lr_scheduler.get_last_lr()[0]:.2e}",
+                )
                 if global_step % args.loss_log_steps == 0:
                     payload = {"epoch": epoch, "global_step": global_step, "bins": interval_bins.reduce_payload(accelerator)}
                     if accelerator.is_main_process:
@@ -444,6 +471,8 @@ def main():
                 writer = csv.DictWriter(handle, fieldnames=("epoch", "global_step", "bin", "timestep_low", "timestep_high", "loss", "samples"))
                 writer.writeheader()
                 writer.writerows(epoch_rows)
+
+    progress_bar.close()
 
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
