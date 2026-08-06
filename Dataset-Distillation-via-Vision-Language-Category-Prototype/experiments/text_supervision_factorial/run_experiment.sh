@@ -133,7 +133,9 @@ train_mode() {
   fi
   echo "==> Training $row on GPUs $TRAIN_GPU_IDS"
   CUDA_VISIBLE_DEVICES="$TRAIN_GPU_IDS" accelerate launch \
-    --num_processes "$NUM_PROCESSES" --main_process_port "$MAIN_PROCESS_PORT" \
+    --num_processes "$NUM_PROCESSES" --num_machines 1 \
+    --mixed_precision "$MIXED_PRECISION" --dynamo_backend no \
+    --main_process_port "$MAIN_PROCESS_PORT" \
     "$EXPERIMENT_DIR/train_text_to_image_supervision.py" \
     --pretrained-model "$BASE_MODEL" --train-root "$DATA_ROOT/train" \
     --caption-file "$CAPTION_FILE" --output-dir "$output" --supervision "$supervision" \

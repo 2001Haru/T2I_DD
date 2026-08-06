@@ -12,7 +12,6 @@ from accelerate import Accelerator
 from accelerate.utils import ProjectConfiguration, set_seed
 from diffusers import AutoencoderKL, DDPMScheduler, StableDiffusionPipeline, UNet2DConditionModel
 from diffusers.optimization import get_scheduler
-from diffusers.training_utils import EMAModel
 from PIL import Image, ImageOps
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
@@ -27,6 +26,62 @@ import sys
 sys.path.insert(0, str(DISTILLATION_DIR))
 from classes import IMAGENET2012_CLASSES  # noqa: E402
 from common import build_unpaired_donors  # noqa: E402
+
+
+class LocalEMAModel:
+    """Diffusers-compatible EMA without the legacy transformers.deepspeed check."""
+
+    def __init__(self, parameters, decay=0.9999, min_decay=0.0):
+        parameters = list(parameters)
+        self.shadow_params = [parameter.detach().clone() for parameter in parameters]
+        self.decay = float(decay)
+        self.min_decay = float(min_decay)
+        self.optimization_step = 0
+
+    def get_decay(self):
+        step = max(0, self.optimization_step - 1)
+        if step <= 0:
+            return 0.0
+        value = (1 + step) / (10 + step)
+        return max(self.min_decay, min(value, self.decay))
+
+    @torch.no_grad()
+    def step(self, parameters):
+        parameters = list(parameters)
+        if len(parameters) != len(self.shadow_params):
+            raise ValueError("EMA parameter count changed during training")
+        self.optimization_step += 1
+        one_minus_decay = 1.0 - self.get_decay()
+        for shadow, parameter in zip(self.shadow_params, parameters):
+            if parameter.requires_grad:
+                shadow.sub_(one_minus_decay * (shadow - parameter.detach()))
+            else:
+                shadow.copy_(parameter.detach())
+
+    @torch.no_grad()
+    def copy_to(self, parameters):
+        for shadow, parameter in zip(self.shadow_params, parameters):
+            parameter.data.copy_(shadow.to(device=parameter.device, dtype=parameter.dtype))
+
+    def to(self, device=None, dtype=None):
+        self.shadow_params = [
+            parameter.to(device=device, dtype=dtype if parameter.is_floating_point() else None)
+            for parameter in self.shadow_params
+        ]
+
+    def state_dict(self):
+        return {
+            "decay": self.decay,
+            "min_decay": self.min_decay,
+            "optimization_step": self.optimization_step,
+            "shadow_params": self.shadow_params,
+        }
+
+    def load_state_dict(self, state_dict):
+        self.decay = float(state_dict["decay"])
+        self.min_decay = float(state_dict["min_decay"])
+        self.optimization_step = int(state_dict["optimization_step"])
+        self.shadow_params = [parameter.detach().clone() for parameter in state_dict["shadow_params"]]
 
 
 def parse_args():
@@ -280,7 +335,7 @@ def main():
         num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
         num_training_steps=max_steps * accelerator.num_processes,
     )
-    ema = EMAModel(unet.parameters(), model_cls=UNet2DConditionModel, model_config=unet.config) if args.use_ema else None
+    ema = LocalEMAModel(unet.parameters()) if args.use_ema else None
     if ema is not None:
         accelerator.register_for_checkpointing(ema)
 
