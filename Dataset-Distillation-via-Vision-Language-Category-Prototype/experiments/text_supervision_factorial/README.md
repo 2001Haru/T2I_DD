@@ -49,6 +49,22 @@ RESUME=true \
 bash experiments/text_supervision_factorial/run_experiment.sh
 ```
 
+For two A100 40GB GPUs, retain effective batch 32 with batch 4 and accumulation 4:
+
+```bash
+DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
+BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
+DIFFUSERS_SRC=/linxi/packages/VLCP/diffusers/src \
+RUN_ID=text_supervision_factorial_2xa100_v0 \
+TRAIN_GPU_IDS=0,1 \
+WORKER_GPU_IDS=0,1 \
+NUM_PROCESSES=2 \
+TRAIN_BATCH_SIZE=4 \
+GRADIENT_ACCUMULATION_STEPS=4 \
+MAX_PARALLEL_EVALS=2 \
+bash experiments/text_supervision_factorial/run_experiment.sh
+```
+
 Set `TRAIN=false`, `GENERATE=false`, or `EVALUATE=false` to restart only later stages. A strict `run_config.txt` prevents mixing incompatible paths or settings.
 
 ## Loss audit

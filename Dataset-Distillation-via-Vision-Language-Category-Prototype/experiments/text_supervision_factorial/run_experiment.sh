@@ -20,6 +20,7 @@ fi
 : "${CAPTION_FILE:?No ImageNette caption JSONL found; set CAPTION_FILE}"
 
 TRAIN_GPU_IDS="${TRAIN_GPU_IDS:-0,1,2,3}"
+WORKER_GPU_IDS="${WORKER_GPU_IDS:-$TRAIN_GPU_IDS}"
 NUM_PROCESSES="${NUM_PROCESSES:-4}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-4}"
 GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-2}"
@@ -43,6 +44,11 @@ if (( NUM_PROCESSES * TRAIN_BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS != 32 )); t
   echo "Effective batch must remain 32; got $((NUM_PROCESSES * TRAIN_BATCH_SIZE * GRADIENT_ACCUMULATION_STEPS))." >&2
   exit 1
 fi
+IFS=',' read -r -a WORKER_GPUS <<< "$WORKER_GPU_IDS"
+if (( ${#WORKER_GPUS[@]} == 0 )); then
+  echo "WORKER_GPU_IDS must contain at least one GPU id." >&2
+  exit 1
+fi
 
 PROTOTYPE_DIR="${PROTOTYPE_DIR:-$RUN_ROOT/prototypes}"
 PROTOTYPE_PATH="${PROTOTYPE_PATH:-$PROTOTYPE_DIR/text_supervision-ipc10-0.7-30-kmexpand1.json}"
@@ -64,6 +70,7 @@ BASE_MODEL=$BASE_MODEL
 CAPTION_FILE=$CAPTION_FILE
 DIFFUSERS_SRC=$DIFFUSERS_SRC
 TRAIN_GPU_IDS=$TRAIN_GPU_IDS
+WORKER_GPU_IDS=$WORKER_GPU_IDS
 NUM_PROCESSES=$NUM_PROCESSES
 TRAIN_BATCH_SIZE=$TRAIN_BATCH_SIZE
 GRADIENT_ACCUMULATION_STEPS=$GRADIENT_ACCUMULATION_STEPS
@@ -155,14 +162,19 @@ if [[ "$GENERATE" == "true" ]]; then
     mode="${modes[$index]}"
     model_args=()
     [[ "$mode" != "frozen" ]] && model_args=(--model "$mode=$MODEL_ROOT/$mode")
-    echo "==> Generating row $mode on GPU $index"
-    CUDA_VISIBLE_DEVICES="$index" python "$EXPERIMENT_DIR/generate_factorial.py" \
+    worker_gpu="${WORKER_GPUS[$((index % ${#WORKER_GPUS[@]}))]}"
+    echo "==> Generating row $mode on GPU $worker_gpu"
+    CUDA_VISIBLE_DEVICES="$worker_gpu" python "$EXPERIMENT_DIR/generate_factorial.py" \
       --prototype "$PROTOTYPE_PATH" --dcs "$DCS_PATH" --base-model "$BASE_MODEL" \
       "${model_args[@]}" --supervisions "$mode" --prompts label correct shuffled \
       --output-root "$SYNTHETIC_ROOT" --generation-seeds "${gen_seeds[@]}" \
       --ipc 10 --strength 0.7 --guidance-scale 10 --num-inference-steps 50 \
       --shuffle-shift 1 --size 256 "${resume_args[@]}" &
     pids+=("$!")
+    if (( ${#pids[@]} >= ${#WORKER_GPUS[@]} )); then
+      for pid in "${pids[@]}"; do wait "$pid"; done
+      pids=()
+    fi
   done
   for pid in "${pids[@]}"; do wait "$pid"; done
 fi
@@ -197,7 +209,7 @@ if [[ "$EVALUATE" == "true" ]]; then
     for supervision in frozen label_ft unpaired_ft matched_ft; do
       for prompt in label correct shuffled; do
         condition="${supervision}_${prompt}"
-        gpu=$((task % 4)); task=$((task + 1))
+        gpu="${WORKER_GPUS[$((task % ${#WORKER_GPUS[@]}))]}"; task=$((task + 1))
         run_eval "$gpu" "$generation_seed" "$condition" & pids+=("$!"); active=$((active + 1))
         if (( active >= MAX_PARALLEL_EVALS )); then
           wait "${pids[0]}"
