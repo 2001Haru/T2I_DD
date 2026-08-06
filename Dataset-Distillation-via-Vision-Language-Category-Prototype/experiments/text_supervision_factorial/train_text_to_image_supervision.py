@@ -102,7 +102,16 @@ def parse_args():
     parser.add_argument("--train-root", required=True)
     parser.add_argument("--caption-file", required=True)
     parser.add_argument("--output-dir", required=True)
-    parser.add_argument("--supervision", choices=("label", "matched", "unpaired"), required=True)
+    parser.add_argument(
+        "--supervision",
+        choices=("empty", "constant", "label", "matched", "unpaired"),
+        required=True,
+    )
+    parser.add_argument(
+        "--constant-prompt",
+        default="A natural photo.",
+        help="Shared non-class text used by constant supervision.",
+    )
     parser.add_argument("--resolution", type=int, default=512)
     parser.add_argument("--train-batch-size", type=int, default=4)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=2)
@@ -157,11 +166,12 @@ def read_records(train_root, caption_file):
 
 
 class SupervisionDataset(Dataset):
-    def __init__(self, rows, tokenizer, supervision, resolution, random_flip, seed):
+    def __init__(self, rows, tokenizer, supervision, resolution, random_flip, seed, constant_prompt):
         self.rows = rows
         self.tokenizer = tokenizer
         self.supervision = supervision
         self.seed = seed
+        self.constant_prompt = constant_prompt
         self.epoch = 0
         self.caption_donors = list(range(len(rows)))
         transform_list = [transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR)]
@@ -204,7 +214,11 @@ class SupervisionDataset(Dataset):
         row = self.rows[index]
         with Image.open(row["path"]) as image:
             pixel_values = self.transform(ImageOps.exif_transpose(image).convert("RGB"))
-        if self.supervision == "label":
+        if self.supervision == "empty":
+            text = ""
+        elif self.supervision == "constant":
+            text = self.constant_prompt
+        elif self.supervision == "label":
             text = IMAGENET2012_CLASSES[row["synset"]]
         else:
             text = self.rows[self.caption_donors[index]]["caption"]
@@ -328,7 +342,13 @@ def main():
 
     rows = read_records(args.train_root, args.caption_file)
     dataset = SupervisionDataset(
-        rows, tokenizer, args.supervision, args.resolution, args.random_flip, args.seed
+        rows,
+        tokenizer,
+        args.supervision,
+        args.resolution,
+        args.random_flip,
+        args.seed,
+        args.constant_prompt,
     )
     dataloader = DataLoader(
         dataset,

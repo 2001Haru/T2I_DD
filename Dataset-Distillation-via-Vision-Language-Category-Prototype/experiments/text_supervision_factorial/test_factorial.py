@@ -12,10 +12,10 @@ from common import build_unpaired_donors, condition_matrix, shuffled_prompt_inde
 
 
 class AssignmentTests(unittest.TestCase):
-    def test_matrix_has_twelve_unique_cells(self):
+    def test_matrix_has_eighteen_unique_cells(self):
         conditions = [item["condition"] for item in condition_matrix()]
-        self.assertEqual(len(conditions), 12)
-        self.assertEqual(len(set(conditions)), 12)
+        self.assertEqual(len(conditions), 18)
+        self.assertEqual(len(set(conditions)), 18)
 
     def test_unpaired_is_deranged_and_preserves_each_class(self):
         groups = {"a": [0, 1, 2, 3], "b": [4, 5, 6]}

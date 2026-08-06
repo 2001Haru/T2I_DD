@@ -5,7 +5,14 @@ import random
 from pathlib import Path
 
 
-SUPERVISION_MODES = ("frozen", "label_ft", "unpaired_ft", "matched_ft")
+SUPERVISION_MODES = (
+    "frozen",
+    "empty_ft",
+    "constant_ft",
+    "label_ft",
+    "unpaired_ft",
+    "matched_ft",
+)
 PROMPT_MODES = ("label", "correct", "shuffled")
 
 

@@ -9,6 +9,9 @@ from pathlib import Path
 from common import PROMPT_MODES, SUPERVISION_MODES, condition_name
 
 
+DEFAULT_SUPERVISIONS = ("frozen", "label_ft", "unpaired_ft", "matched_ft")
+
+
 RESULT = re.compile(r"Best, last acc:----(\[[^\]]+\])")
 
 
@@ -16,6 +19,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--evaluation-root", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--supervisions", nargs="+", choices=SUPERVISION_MODES, default=DEFAULT_SUPERVISIONS)
     return parser.parse_args()
 
 
@@ -40,7 +44,7 @@ def main():
     for seed_dir in sorted(root.glob("seed_*"), key=lambda p: int(p.name.split("_")[-1])):
         seed = int(seed_dir.name.split("_")[-1])
         values = {}
-        for supervision in SUPERVISION_MODES:
+        for supervision in args.supervisions:
             for prompt in PROMPT_MODES:
                 condition = condition_name(supervision, prompt)
                 scores = parse_log(seed_dir / f"{condition}.log")
@@ -55,7 +59,7 @@ def main():
                     "classifier_accuracies": scores,
                 })
         current = {}
-        for supervision in SUPERVISION_MODES:
+        for supervision in args.supervisions:
             label = values[condition_name(supervision, "label")]
             correct = values[condition_name(supervision, "correct")]
             shuffled = values[condition_name(supervision, "shuffled")]

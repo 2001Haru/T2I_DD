@@ -19,6 +19,44 @@ All inference cells use the same VLCP prototype initialization (`strength=0.7`),
 
 Thus `matched_ft - unpaired_ft` estimates the value of image-caption correspondence while holding image data and class-level caption marginals fixed. This is deliberately different from a single static global shuffle.
 
+## Causal ladder extension
+
+The extension adds two controls and a second fine-tuning seed without rerunning completed seed-0 checkpoints:
+
+- `empty_ft`: target-domain images with the empty CLIP text condition.
+- `constant_ft`: the same images with the shared prompt `A natural photo.`.
+- `label_ft`, `unpaired_ft`, and `matched_ft`: a second fine-tuning seed.
+
+This separates target-domain image adaptation, generic conditioning style, class-language supervision, rich class-level text marginals, and instance-level correspondence. `BASE_RUN_ROOT` must point to the completed original 4x3 run so its frozen and seed-0 results can be reused.
+
+For four A100 40GB GPUs, start the persistent scheduler with:
+
+```bash
+DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
+BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
+BASE_RUN_ROOT=/linxi/T2I_DD/Dataset-Distillation-via-Vision-Language-Category-Prototype/text_supervision_factorial_runs/text_supervision_factorial_2xa100_v0 \
+RUN_ID=text_supervision_causal_ladder_v0 \
+GPU_IDS=0,1,2,3 \
+DIFFUSERS_SRC=/linxi/packages/VLCP/diffusers \
+bash experiments/text_supervision_factorial/run_causal_ladder.sh
+```
+
+Each checkpoint is trained on one GPU with `batch_size=4`, `gradient_accumulation_steps=8`, and effective batch size 32. The scheduler prioritizes training, then generation, then classifier evaluation. It keeps one parent process alive, ignores SSH `SIGHUP`, dynamically fills free GPUs, resumes checkpoints, and retries failed children indefinitely by default. Use `MAX_RETRIES=N` only when deliberate fail-fast behavior is desired.
+
+For an SSH-independent launch:
+
+```bash
+nohup env DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
+  BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
+  BASE_RUN_ROOT=/path/to/text_supervision_factorial_2xa100_v0 \
+  RUN_ID=text_supervision_causal_ladder_v0 GPU_IDS=0,1,2,3 \
+  DIFFUSERS_SRC=/linxi/packages/VLCP/diffusers \
+  bash experiments/text_supervision_factorial/run_causal_ladder.sh \
+  > causal_ladder_v0.log 2>&1 < /dev/null &
+```
+
+Progress is written to `scheduler_logs/`. The final causal contrasts are in `summary/causal_ladder_summary.json` and CSV files.
+
 ## Four-A100 run
 
 ```bash
