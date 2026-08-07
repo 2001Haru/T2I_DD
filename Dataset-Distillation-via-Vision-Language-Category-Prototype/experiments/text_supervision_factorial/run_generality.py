@@ -380,6 +380,20 @@ def quote(command):
     return " ".join(shlex.quote(str(item)) for item in command)
 
 
+def write_scheduler_state(run_root, tasks, completed, running):
+    payload = {
+        "updated_at": time.strftime("%F %T"),
+        "completed": sorted(completed),
+        "running": {gpu: task.name for gpu, task in running.items()},
+        "pending": sorted(name for name in tasks if name not in completed and name not in {
+            task.name for task in running.values()
+        }),
+    }
+    (run_root / "scheduler_state.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
 def launch(task, gpu, args):
     command = list(task.command)
     if task.kind == "train":
@@ -431,6 +445,10 @@ def main():
     completed = {name for name, task in tasks.items() if task.complete()}
     running = {}
     print(f"Generality pipeline: {len(completed)}/{len(tasks)} tasks already complete", flush=True)
+    for name in sorted(name for name, task in tasks.items() if task.kind == "train"):
+        state = "REUSE" if name in completed else "PENDING"
+        print(f"TRAIN {state}: {name}", flush=True)
+    write_scheduler_state(run_root, tasks, completed, running)
     while len(completed) < len(tasks):
         now = time.time()
         for gpu, task in list(running.items()):
@@ -471,6 +489,7 @@ def main():
             running[gpu] = selected
             if selected.kind == "eval":
                 evals += 1
+        write_scheduler_state(run_root, tasks, completed, running)
         time.sleep(5)
     subprocess.run([
         sys.executable, str(HERE / "summarize_generality.py"), "--evaluation-index",

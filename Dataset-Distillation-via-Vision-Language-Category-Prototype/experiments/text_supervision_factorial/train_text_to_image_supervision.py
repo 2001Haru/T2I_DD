@@ -535,6 +535,7 @@ def main():
             "global_steps": global_step,
             "epochs": args.num_train_epochs,
             "supervision": args.supervision,
+            "seed": args.seed,
             "loss_files": ["timestep_loss_intervals.jsonl", "timestep_loss_epochs.csv"],
         }
         (output_dir / "training_summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
