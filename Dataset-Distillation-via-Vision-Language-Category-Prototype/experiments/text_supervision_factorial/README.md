@@ -63,6 +63,8 @@ The causal-ladder summary also writes:
 - `prompt_effects_by_supervision.csv`: `Descriptive-Label` and `Correct-Shuffled` effects with hierarchical bootstrap intervals.
 - `primary_mechanism_summary.json`: compact machine-readable versions of those two tables.
 - `causal_ladder_mechanisms.png`: the performance ladder, conditioning-style effect, and correspondence effect.
+- `endpoint_policy_performance.csv` and `endpoint_policy_contrast.csv`: the paired end-to-end comparison between caption-free `Empty-FT + Label` and caption-intensive `Matched-FT + Correct DCS`.
+- `endpoint_policy_comparison.png`: absolute endpoint performance and the hierarchical-bootstrap accuracy premium of the caption-intensive policy. This is a joint deployment-policy contrast, not an isolated caption causal effect.
 
 ## Four-A100 run
 
