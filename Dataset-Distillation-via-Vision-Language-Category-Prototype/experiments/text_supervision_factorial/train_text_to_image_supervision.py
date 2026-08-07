@@ -136,6 +136,13 @@ def parse_args():
 
 def read_records(train_root, caption_file):
     train_root = Path(train_root).resolve()
+    image_paths = [
+        path for path in train_root.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+    ]
+    by_basename = defaultdict(list)
+    for image_path in image_paths:
+        by_basename[image_path.name].append(image_path)
     rows = []
     seen = set()
     with Path(caption_file).open("r", encoding="utf-8") as handle:
@@ -146,6 +153,11 @@ def read_records(train_root, caption_file):
             relative = str(item.get("file_name", "")).replace("\\", "/")
             caption = str(item.get("text", "")).strip()
             path = train_root / relative
+            if relative and not path.is_file() and len(Path(relative).parts) == 1:
+                matches = by_basename.get(relative, [])
+                if len(matches) == 1:
+                    path = matches[0]
+                    relative = path.relative_to(train_root).as_posix()
             if not relative or not caption or not path.is_file():
                 raise ValueError(f"Invalid caption row {line_number}: {relative}")
             synset = Path(relative).parts[0]
@@ -155,11 +167,7 @@ def read_records(train_root, caption_file):
                 raise ValueError(f"Duplicate image in caption metadata: {relative}")
             seen.add(relative)
             rows.append({"path": path, "relative": relative, "synset": synset, "caption": caption})
-    images = {
-        path.relative_to(train_root).as_posix()
-        for path in train_root.rglob("*")
-        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-    }
+    images = {path.relative_to(train_root).as_posix() for path in image_paths}
     if images != seen:
         raise RuntimeError(f"Caption/image mismatch: {len(images - seen)} missing, {len(seen - images)} unknown")
     return rows

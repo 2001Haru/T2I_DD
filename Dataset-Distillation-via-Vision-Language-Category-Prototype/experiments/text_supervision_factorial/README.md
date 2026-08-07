@@ -135,3 +135,80 @@ The bins are defined on the training scheduler's native 1000 timesteps, so they 
 - `(matched correct-shuffled) - (unpaired correct-shuffled)`: whether matched training makes the model specifically exploit matched cluster prompts at inference.
 
 Results are written to `summary/summary.json`, `cells.csv`, and `contrasts.csv`.
+
+## Generality sequence: seeds, IPC, then ImageWoof
+
+`run_generality.sh` executes the preregistered sequence without mixing LoRA into the mechanism test:
+
+1. Extend ImageNette IPC10 with fine-tuning seeds 2 and 3 for `Empty-FT + Label` and `Matched-FT + Correct/Shuffled`.
+2. Reuse training seeds 0 and 1 at IPC20 and IPC50, comparing `Frozen + Label`, `Empty-FT + Label`, and `Matched-FT + Correct/Shuffled`.
+3. Replicate on ImageWoof with Frozen, Empty-FT, Unpaired-FT, and Matched-FT. LoRA is deliberately deferred until these tests establish generality.
+
+The default IPC sweep uses only training seeds 0 and 1 to prevent IPC50 from becoming a second full causal ladder. Set `IPC_TRAINING_SEEDS="0 1 2 3"` only if the first sweep justifies the extra generation and classifier cost.
+
+Run the first two phases on two V100s:
+
+```bash
+cd /linxi/T2I_DD/Dataset-Distillation-via-Vision-Language-Category-Prototype
+
+nohup env \
+  NETTE_DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
+  NETTE_CAPTION_FILE=/linxi/dataset/VLCP/ImageNette/train/metadata.jsonl \
+  BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
+  BASE_RUN_ROOT=/path/to/text_supervision_factorial_2xa100_v0 \
+  CAUSAL_RUN_ROOT=/path/to/text_supervision_causal_ladder_v0 \
+  RUN_ID=text_supervision_generality_v0 \
+  GPU_IDS=0,1 DIFFUSERS_SRC=/linxi/packages/VLCP/diffusers/src \
+  PHASES="nette_seeds nette_ipc" \
+  bash experiments/text_supervision_factorial/run_generality.sh \
+  > text_supervision_generality_v0.log 2>&1 < /dev/null &
+```
+
+The parent process ignores SSH `SIGHUP`, runs one full-UNet job per GPU with effective batch size 32, permits only one classifier evaluation at a time to limit host-memory pressure, archives failed logs, resumes checkpoints/partial generation, and retries indefinitely by default. A strict `run_manifest.json` rejects incompatible resumes.
+
+Prepare ImageWoof from the same ImageNet archive:
+
+```bash
+python experiments/text_supervision_factorial/prepare_imagenet_subset.py \
+  --spec woof \
+  --source-root /zhangchi/imagenet_512/images \
+  --validation-root /linxi/dataset/imagenet/validation/val \
+  --output-root /linxi/dataset/VLCP/ImageWoof \
+  --link-mode symlink
+```
+
+Run LLaVA on `/linxi/dataset/VLCP/ImageWoof/llava_questions.jsonl`, then merge all answer shards:
+
+```bash
+python experiments/prior_alignment_ablation/merge_llava_answers.py \
+  --questions /linxi/dataset/VLCP/ImageWoof/llava_questions.jsonl \
+  --answers /path/to/answers/*.jsonl \
+  --output /linxi/dataset/VLCP/ImageWoof/train/metadata.jsonl
+```
+
+After captions are complete, resume the same run with only the held-out replication phase:
+
+```bash
+NETTE_DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
+NETTE_CAPTION_FILE=/linxi/dataset/VLCP/ImageNette/train/metadata.jsonl \
+WOOF_DATA_ROOT=/linxi/dataset/VLCP/ImageWoof \
+WOOF_CAPTION_FILE=/linxi/dataset/VLCP/ImageWoof/train/metadata.jsonl \
+BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
+BASE_RUN_ROOT=/path/to/text_supervision_factorial_2xa100_v0 \
+CAUSAL_RUN_ROOT=/path/to/text_supervision_causal_ladder_v0 \
+RUN_ID=text_supervision_generality_woof_v0 GPU_IDS=0,1 \
+DIFFUSERS_SRC=/linxi/packages/VLCP/diffusers/src PHASES=woof \
+bash experiments/text_supervision_factorial/run_generality.sh
+```
+
+ImageWoof intentionally uses a separate `RUN_ID`: adding a phase to an existing run changes the preregistered manifest and is rejected. Final outputs are `summary/performance.csv`, `summary/contrasts.csv`, and `summary/generality_summary.png`.
+
+To produce one cross-dataset report from the separately frozen manifests:
+
+```bash
+python experiments/text_supervision_factorial/summarize_generality.py \
+  --evaluation-index \
+    text_supervision_generality_runs/text_supervision_generality_v0/evaluation_index.json \
+    text_supervision_generality_runs/text_supervision_generality_woof_v0/evaluation_index.json \
+  --output-dir text_supervision_generality_runs/combined_summary
+```

@@ -202,8 +202,10 @@ def gen_prototype(label_list, km_models,prompt_to_paths,args):
             new_paths = os.path.relpath(sample, os.path.join(args.data_dir, 'train')).replace(os.sep, '/')
             if new_paths == '..' or new_paths.startswith('../'):
                 raise ValueError(f'Image path is outside the training root: {sample}')
-            if 'woof' in args.label_file_path: 
-                new_paths = sample.split('/')[-1]  
+            # Prefer ImageFolder-relative metadata; keep basename lookup for
+            # compatibility with the authors' legacy ImageWoof JSONL.
+            if new_paths not in data_dict and os.path.basename(sample) in data_dict:
+                new_paths = os.path.basename(sample)
             # new_paths = sample.split('/')[-1] 
             # print(f'{data_dict}--{new_paths}') # 假设你的样本数据保存在 data 变量中
             text_desc = data_dict.pop(new_paths, None)
