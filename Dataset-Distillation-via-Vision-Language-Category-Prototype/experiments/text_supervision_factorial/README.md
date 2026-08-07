@@ -57,6 +57,13 @@ nohup env DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
 
 Progress is written to `scheduler_logs/`. The final causal contrasts are in `summary/causal_ladder_summary.json` and CSV files.
 
+The causal-ladder summary also writes:
+
+- `performance_by_supervision_and_prompt.csv`: six training regimes under Label, Correct, Shuffled, and paired descriptive-average inference.
+- `prompt_effects_by_supervision.csv`: `Descriptive-Label` and `Correct-Shuffled` effects with hierarchical bootstrap intervals.
+- `primary_mechanism_summary.json`: compact machine-readable versions of those two tables.
+- `causal_ladder_mechanisms.png`: the performance ladder, conditioning-style effect, and correspondence effect.
+
 ## Four-A100 run
 
 ```bash

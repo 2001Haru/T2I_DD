@@ -11,6 +11,7 @@ from pathlib import Path
 RESULT = re.compile(r"Best, last acc:----(\[[^\]]+\])")
 PROMPTS = ("label", "correct", "shuffled")
 ROWS = ("empty_ft", "constant_ft", "label_ft", "unpaired_ft", "matched_ft")
+MODE_ORDER = ("frozen",) + ROWS
 
 
 def scores(path):
@@ -24,6 +25,12 @@ def paired(left, right):
     if len(left) != len(right):
         raise ValueError("Classifier repeat counts differ")
     return [a - b for a, b in zip(left, right)]
+
+
+def pairwise_average(left, right):
+    if len(left) != len(right):
+        raise ValueError("Classifier repeat counts differ")
+    return [(a + b) / 2.0 for a, b in zip(left, right)]
 
 
 def hierarchical_bootstrap(rows, samples=10000, seed=20260807):
@@ -107,9 +114,15 @@ def main():
                         "contrast": f"{name}_{prompt}", "mean_difference": statistics.fmean(differences),
                         "std_difference": statistics.pstdev(differences), "paired_differences": differences,
                     })
-                left_dcs = values[(training_seed, generation_seed, left, "correct")] + values[(training_seed, generation_seed, left, "shuffled")]
+                left_dcs = pairwise_average(
+                    values[(training_seed, generation_seed, left, "correct")],
+                    values[(training_seed, generation_seed, left, "shuffled")],
+                )
                 right_seed = None if right == "frozen" else training_seed
-                right_dcs = values[(right_seed, generation_seed, right, "correct")] + values[(right_seed, generation_seed, right, "shuffled")]
+                right_dcs = pairwise_average(
+                    values[(right_seed, generation_seed, right, "correct")],
+                    values[(right_seed, generation_seed, right, "shuffled")],
+                )
                 differences = paired(left_dcs, right_dcs)
                 contrasts.append({
                     "training_seed": training_seed, "generation_seed": generation_seed,
@@ -132,6 +145,92 @@ def main():
             "bootstrap_order": "training_seed -> generation_seed -> paired_classifier_repeat",
             "values": selected,
         }
+
+    performance_rows = []
+    prompt_effect_rows = []
+    for supervision in MODE_ORDER:
+        training_seeds = (None,) if supervision == "frozen" else (0, 1)
+        for training_seed in training_seeds:
+            for generation_seed in generation_seeds:
+                label = values[(training_seed, generation_seed, supervision, "label")]
+                correct = values[(training_seed, generation_seed, supervision, "correct")]
+                shuffled = values[(training_seed, generation_seed, supervision, "shuffled")]
+                descriptive = pairwise_average(correct, shuffled)
+                for prompt, current in (
+                    ("label", label),
+                    ("correct", correct),
+                    ("shuffled", shuffled),
+                    ("descriptive_average", descriptive),
+                ):
+                    performance_rows.append({
+                        "training_seed": training_seed,
+                        "generation_seed": generation_seed,
+                        "supervision": supervision,
+                        "prompt": prompt,
+                        "paired_differences": current,
+                    })
+                for effect, differences in (
+                    ("correct_minus_label", paired(correct, label)),
+                    ("shuffled_minus_label", paired(shuffled, label)),
+                    ("descriptive_minus_label", paired(descriptive, label)),
+                    ("correct_minus_shuffled", paired(correct, shuffled)),
+                ):
+                    prompt_effect_rows.append({
+                        "training_seed": training_seed,
+                        "generation_seed": generation_seed,
+                        "supervision": supervision,
+                        "effect": effect,
+                        "paired_differences": differences,
+                    })
+
+    performance_summary = []
+    for supervision in MODE_ORDER:
+        for prompt in ("label", "correct", "shuffled", "descriptive_average"):
+            selected = [
+                row for row in performance_rows
+                if row["supervision"] == supervision and row["prompt"] == prompt
+            ]
+            flattened = [value for row in selected for value in row["paired_differences"]]
+            lower, upper = hierarchical_bootstrap(selected)
+            performance_summary.append({
+                "supervision": supervision,
+                "prompt": prompt,
+                "mean_accuracy": statistics.fmean(flattened),
+                "hierarchical_bootstrap_ci_lower": lower,
+                "hierarchical_bootstrap_ci_upper": upper,
+                "training_generation_cells": len(selected),
+                "classifier_observations": len(flattened),
+            })
+
+    prompt_effect_summary = []
+    for supervision in MODE_ORDER:
+        for effect in ("correct_minus_label", "shuffled_minus_label", "descriptive_minus_label", "correct_minus_shuffled"):
+            selected = [
+                row for row in prompt_effect_rows
+                if row["supervision"] == supervision and row["effect"] == effect
+            ]
+            flattened = [value for row in selected for value in row["paired_differences"]]
+            lower, upper = hierarchical_bootstrap(selected)
+            prompt_effect_summary.append({
+                "supervision": supervision,
+                "effect": effect,
+                "mean_difference": statistics.fmean(flattened),
+                "hierarchical_bootstrap_ci_lower": lower,
+                "hierarchical_bootstrap_ci_upper": upper,
+                "training_generation_cells": len(selected),
+                "paired_classifier_observations": len(flattened),
+            })
+
+    mechanism_summary = {
+        "bootstrap_order": "training_seed -> generation_seed -> paired_classifier_repeat",
+        "performance_by_supervision_and_prompt": performance_summary,
+        "prompt_effects_by_supervision": prompt_effect_summary,
+        "interpretation_boundary": (
+            "Frozen has no fine-tuning-seed level. Other rows use two fine-tuning seeds, "
+            "two generation seeds, and paired classifier repeats. Confidence intervals "
+            "quantify this experiment and should not be read as cross-dataset intervals."
+        ),
+    }
     payload = {
         "causal_ladder": ["frozen", "empty_ft", "constant_ft", "label_ft", "unpaired_ft", "matched_ft"],
         "estimands": {
@@ -142,17 +241,71 @@ def main():
             "matched_minus_unpaired": "instance-level image-caption correspondence",
         },
         "cells": cells, "contrasts": contrasts, "aggregate_contrasts": aggregate,
+        "mechanism_summary": mechanism_summary,
     }
     (output / "causal_ladder_summary.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     for filename, records, fields in (
         ("causal_ladder_cells.csv", cells, ("training_seed", "generation_seed", "supervision", "prompt", "mean_accuracy", "std_accuracy")),
         ("causal_ladder_contrasts.csv", contrasts, ("training_seed", "generation_seed", "contrast", "mean_difference", "std_difference")),
+        ("performance_by_supervision_and_prompt.csv", performance_summary, ("supervision", "prompt", "mean_accuracy", "hierarchical_bootstrap_ci_lower", "hierarchical_bootstrap_ci_upper", "training_generation_cells", "classifier_observations")),
+        ("prompt_effects_by_supervision.csv", prompt_effect_summary, ("supervision", "effect", "mean_difference", "hierarchical_bootstrap_ci_lower", "hierarchical_bootstrap_ci_upper", "training_generation_cells", "paired_classifier_observations")),
     ):
         with (output / filename).open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()
             writer.writerows({field: row[field] for field in fields} for row in records)
+    (output / "primary_mechanism_summary.json").write_text(
+        json.dumps(mechanism_summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    plot_mechanism_summary(performance_summary, prompt_effect_summary, output / "causal_ladder_mechanisms.png")
     print(json.dumps(aggregate, indent=2, sort_keys=True))
+
+
+def plot_mechanism_summary(performance, effects, output):
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    labels = [mode.replace("_ft", "").replace("_", " ") for mode in MODE_ORDER]
+    x = np.arange(len(MODE_ORDER))
+
+    def performance_metric(mode, prompt):
+        return next(row for row in performance if row["supervision"] == mode and row["prompt"] == prompt)
+
+    def effect_metric(mode, effect):
+        return next(row for row in effects if row["supervision"] == mode and row["effect"] == effect)
+
+    figure, axes = plt.subplots(1, 3, figsize=(18, 5.2))
+    width = 0.36
+    for offset, prompt, title in ((-width / 2, "label", "Label"), (width / 2, "descriptive_average", "Descriptive")):
+        rows = [performance_metric(mode, prompt) for mode in MODE_ORDER]
+        means = np.array([row["mean_accuracy"] for row in rows])
+        lower = means - np.array([row["hierarchical_bootstrap_ci_lower"] for row in rows])
+        upper = np.array([row["hierarchical_bootstrap_ci_upper"] for row in rows]) - means
+        axes[0].bar(x + offset, means, width, label=title, yerr=np.vstack([lower, upper]), capsize=3)
+    axes[0].set_title("Causal ladder performance")
+    axes[0].set_ylabel("Validation accuracy")
+    axes[0].legend()
+
+    for axis, effect, title in (
+        (axes[1], "descriptive_minus_label", "Conditioning-style effect"),
+        (axes[2], "correct_minus_shuffled", "Cluster-correspondence effect"),
+    ):
+        rows = [effect_metric(mode, effect) for mode in MODE_ORDER]
+        means = np.array([row["mean_difference"] for row in rows])
+        lower = means - np.array([row["hierarchical_bootstrap_ci_lower"] for row in rows])
+        upper = np.array([row["hierarchical_bootstrap_ci_upper"] for row in rows]) - means
+        axis.bar(x, means, yerr=np.vstack([lower, upper]), capsize=3)
+        axis.axhline(0, color="black", linestyle="--", linewidth=1)
+        axis.set_title(title)
+        axis.set_ylabel("Paired accuracy difference")
+
+    for axis in axes:
+        axis.set_xticks(x, labels, rotation=25, ha="right")
+        axis.grid(axis="y", alpha=0.25)
+    figure.suptitle("Text-supervision causal ladder")
+    figure.tight_layout()
+    figure.savefig(output, dpi=180)
+    plt.close(figure)
 
 
 if __name__ == "__main__":
