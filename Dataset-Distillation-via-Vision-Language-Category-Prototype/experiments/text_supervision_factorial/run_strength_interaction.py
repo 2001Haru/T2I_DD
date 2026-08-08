@@ -42,7 +42,7 @@ def parse_args():
     parser.add_argument("--num-inference-steps", type=int, default=50)
     parser.add_argument("--classifier-repeats", type=int, default=2)
     parser.add_argument("--classifier-seed", type=int, default=0)
-    parser.add_argument("--max-parallel-evals", type=int, default=1)
+    parser.add_argument("--max-parallel-evals", type=int, default=2)
     parser.add_argument("--retry-delay-seconds", type=int, default=120)
     parser.add_argument("--max-retries", type=int, default=0, help="0 retries forever")
     parser.add_argument("--diffusers-src", default="")

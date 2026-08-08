@@ -234,6 +234,10 @@ GPU_IDS=0,1 \
 bash experiments/text_supervision_factorial/run_strength_interaction.sh
 ```
 
+The default `MAX_PARALLEL_EVALS=2` launches two independent single-GPU classifier evaluations so both GPUs remain
+occupied during the evaluation phase. Set `MAX_PARALLEL_EVALS=1` if the host runs out of RAM or DataLoader workers
+are killed; this scheduling option does not change any experimental cell or resume manifest.
+
 The process ignores `SIGHUP`, retries failed tasks indefinitely by default, and writes scheduler state under the
 run root. Re-running the same command resumes. Primary outputs are `summary/prompt_utility.csv`,
 `summary/interactions_relative_to_0p7.csv`, `summary/ipc_interactions.csv`, and
