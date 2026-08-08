@@ -153,7 +153,7 @@ cd /linxi/T2I_DD/Dataset-Distillation-via-Vision-Language-Category-Prototype
 
 nohup env \
   NETTE_DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
-  NETTE_CAPTION_FILE=/linxi/dataset/VLCP/ImageNette/train/metadata.jsonl \
+  NETTE_CAPTION_FILE=/linxi/dataset/VLCP/ImageNette/train/nette.jsonl \
   BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
   BASE_RUN_ROOT=/path/to/text_supervision_factorial_2xa100_v0 \
   CAUSAL_RUN_ROOT=/path/to/text_supervision_causal_ladder_v0 \
@@ -190,7 +190,7 @@ After captions are complete, resume the same run with only the held-out replicat
 
 ```bash
 NETTE_DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
-NETTE_CAPTION_FILE=/linxi/dataset/VLCP/ImageNette/train/metadata.jsonl \
+NETTE_CAPTION_FILE=/linxi/dataset/VLCP/ImageNette/train/nette.jsonl \
 WOOF_DATA_ROOT=/linxi/dataset/VLCP/ImageWoof \
 WOOF_CAPTION_FILE=/linxi/dataset/VLCP/ImageWoof/train/metadata.jsonl \
 BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
@@ -243,3 +243,58 @@ run root. Re-running the same command resumes. Primary outputs are `summary/prom
 `summary/interactions_relative_to_0p7.csv`, `summary/ipc_interactions.csv`, and
 `summary/strength_interaction_summary.png`. The descriptive
 best-strength table is exploratory; it is not an unbiased post-selection estimate.
+
+## Overnight A/B/C conditioning-interface matrix
+
+`run_conditioning_interface_matrix.sh` runs the large preregistered follow-up without the abandoned `G`
+condition. The only prompt conditions are Label, Correct DCS, and within-class Shuffled DCS.
+
+| Matrix | Dataset/checkpoint | IPC | Visual interfaces | Prompt randomization |
+|---|---|---|---|---|
+| A | ImageNette Matched-FT, training seeds 0/1 | 10, 20, 50 | strength 0.70 to 1.00 in 0.05 increments | L/C/S1 everywhere; S2/S4/S7 at 0.7/0.8/0.9/1.0 |
+| B | ImageNette Frozen and Empty-FT seeds 0/1 | 10, 50 | strength 0.7/0.8/0.9/1.0 plus true pure-noise T2I | L/C/S1 |
+| C | ImageWoof Matched-FT, training seeds 0/1 | 10, 50 | strength 0.7/0.8/0.9/1.0 plus true pure-noise T2I | L/C/S1 |
+
+With generation seeds 0/1 and classifier repeat 2, the default manifest contains 396, 180, and 120 evaluation
+cells for A, B, and C respectively. `strength=1.0` remains an img2img cell; `pure_noise` uses
+`StableDiffusionPipeline` and is therefore a genuinely visual-free control.
+
+The scheduler is one persistent parent process. It starts both ImageWoof fine-tunes immediately, fills the other
+GPUs with artifacts/generation, keeps at most two classifier evaluations active to limit host RAM, ignores SSH
+`SIGHUP`, archives failed logs, and retries indefinitely. Existing exact cells can be reused through one or more
+prior `evaluation_index.json` files.
+
+```bash
+cd /linxi/T2I_DD/Dataset-Distillation-via-Vision-Language-Category-Prototype
+
+nohup env \
+  NETTE_DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
+  NETTE_CAPTION_FILE=/linxi/dataset/VLCP/ImageNette/train/nette.jsonl \
+  WOOF_DATA_ROOT=/linxi/dataset/VLCP/ImageWoof \
+  WOOF_CAPTION_FILE=/linxi/dataset/VLCP/ImageWoof/train/metadata.jsonl \
+  BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
+  BASE_RUN_ROOT=/path/to/text_supervision_factorial_2xa100_v0 \
+  CAUSAL_RUN_ROOT=/path/to/text_supervision_causal_ladder_v0 \
+  GENERALITY_RUN_ROOT=/path/to/text_supervision_generality_v0 \
+  REUSE_INDEXES="/path/to/strength_prompt_interaction_v0/evaluation_index.json /path/to/text_supervision_generality_v0/evaluation_index.json" \
+  RUN_ID=conditioning_interface_abc_v0 GPU_IDS=0,1,2,3 \
+  DIFFUSERS_SRC=/linxi/packages/VLCP/diffusers/src \
+  bash experiments/text_supervision_factorial/run_conditioning_interface_matrix.sh \
+  > conditioning_interface_abc_v0.log 2>&1 < /dev/null &
+```
+
+Resume with the identical command and `RUN_ID`. `run_manifest.json` rejects changed paths or settings. To run a
+subset without changing code, set `MATRICES="A B"` and use a different `RUN_ID`.
+
+The summary uses fixed shift `S1` for comparisons across every strength. At the four preregistered robustness
+strengths it also averages shuffle shifts inside each training-seed x generation-seed x classifier-repeat cell
+before applying the hierarchical bootstrap. Its estimands are:
+
+- `Correct - Label`: utility of the matched descriptive prompt;
+- `Shuffled-S1 - Label`: primary utility of the class-level descriptive prompt marginal;
+- `Correct - Shuffled-S1`: primary value of cluster-level correspondence;
+- the corresponding `mean(Shuffled)` contrasts: randomization-robustness estimates at strengths with four shifts.
+
+Outputs are `summary/performance.csv`, `summary/contrasts.csv`, `summary/shuffle_shift_effects.csv`, and
+`summary/conditioning_interface_matrix_summary.json`. Shuffle shifts are randomization realizations, not
+independent experimental units.

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 import torch
-from diffusers import StableDiffusionImg2ImgPipeline
+from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionPipeline
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -37,6 +37,7 @@ def parse_args():
     parser.add_argument("--generation-seeds", type=int, nargs="+", default=(0, 1))
     parser.add_argument("--ipc", type=int, default=10)
     parser.add_argument("--strength", type=float, default=0.7)
+    parser.add_argument("--visual-mode", choices=("prototype", "pure_noise"), default="prototype")
     parser.add_argument("--guidance-scale", type=float, default=10.0)
     parser.add_argument("--num-inference-steps", type=int, default=50)
     parser.add_argument("--negative-prompt", default="cartoon, anime, painting")
@@ -129,17 +130,23 @@ def generate(pipe, prototypes, dcs, supervision, prompt_mode, generation_seed, o
                     completed += 1
                     continue
                 prompt_embeds, negative_embeds = get_pipeline_embeds(pipe, prompt, args.negative_prompt, args.device)
-                latent = torch.tensor(prototype_data, dtype=torch.float16, device=args.device).unsqueeze(0)
                 generator = torch.Generator(device=args.device).manual_seed(image_seed)
-                image = pipe(
-                    prompt_embeds=prompt_embeds,
-                    negative_prompt_embeds=negative_embeds,
-                    image=latent,
-                    strength=args.strength,
-                    guidance_scale=args.guidance_scale,
-                    num_inference_steps=args.num_inference_steps,
-                    generator=generator,
-                ).images[0]
+                call_args = {
+                    "prompt_embeds": prompt_embeds,
+                    "negative_prompt_embeds": negative_embeds,
+                    "guidance_scale": args.guidance_scale,
+                    "num_inference_steps": args.num_inference_steps,
+                    "generator": generator,
+                }
+                if args.visual_mode == "prototype":
+                    call_args["image"] = torch.tensor(
+                        prototype_data, dtype=torch.float16, device=args.device
+                    ).unsqueeze(0)
+                    call_args["strength"] = args.strength
+                else:
+                    call_args["height"] = args.size
+                    call_args["width"] = args.size
+                image = pipe(**call_args).images[0]
                 image.resize((args.size, args.size)).save(destination)
                 completed += 1
                 print(f"[{supervision}/{prompt_mode} seed={generation_seed}] {completed}/{len(prototypes) * args.ipc}")
@@ -160,7 +167,8 @@ def main():
 
     for supervision in args.supervisions:
         checkpoint = models[supervision]
-        pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+        pipeline_class = StableDiffusionImg2ImgPipeline if args.visual_mode == "prototype" else StableDiffusionPipeline
+        pipe = pipeline_class.from_pretrained(
             checkpoint, torch_dtype=torch.float16, safety_checker=None, requires_safety_checker=False
         ).to(args.device)
         pipe.set_progress_bar_config(disable=True)
@@ -180,7 +188,8 @@ def main():
                     "dcs_sha256": sha256_file(dcs_path),
                     "generation_seed": generation_seed,
                     "ipc": args.ipc,
-                    "strength": args.strength,
+                    "strength": args.strength if args.visual_mode == "prototype" else None,
+                    "visual_mode": args.visual_mode,
                     "guidance_scale": args.guidance_scale,
                     "num_inference_steps": args.num_inference_steps,
                     "negative_prompt": args.negative_prompt,
