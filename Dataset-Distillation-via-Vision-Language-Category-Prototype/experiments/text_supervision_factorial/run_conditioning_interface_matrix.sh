@@ -4,12 +4,12 @@ set -euo pipefail
 EXPERIMENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$EXPERIMENT_DIR/../.." && pwd)"
 
-: "${NETTE_DATA_ROOT:?Set NETTE_DATA_ROOT}"
-: "${NETTE_CAPTION_FILE:?Set NETTE_CAPTION_FILE}"
-: "${BASE_MODEL:?Set BASE_MODEL}"
-: "${BASE_RUN_ROOT:?Set BASE_RUN_ROOT}"
-: "${CAUSAL_RUN_ROOT:?Set CAUSAL_RUN_ROOT}"
-: "${GENERALITY_RUN_ROOT:?Set GENERALITY_RUN_ROOT}"
+NETTE_DATA_ROOT="${NETTE_DATA_ROOT:-/linxi/dataset/VLCP/ImageNette}"
+NETTE_CAPTION_FILE="${NETTE_CAPTION_FILE:-$NETTE_DATA_ROOT/train/nette.jsonl}"
+BASE_MODEL="${BASE_MODEL:-/linxi/models/VLCP/stable-diffusion-v1-5}"
+BASE_RUN_ROOT="${BASE_RUN_ROOT:-$REPO_ROOT/text_supervision_factorial_runs/text_supervision_factorial_2xa100_v0}"
+CAUSAL_RUN_ROOT="${CAUSAL_RUN_ROOT:-$REPO_ROOT/text_supervision_factorial_runs/text_supervision_causal_ladder_v0}"
+GENERALITY_RUN_ROOT="${GENERALITY_RUN_ROOT:-$REPO_ROOT/text_supervision_generality_runs/text_supervision_generality_v0}"
 
 RUN_ID="${RUN_ID:-conditioning_interface_abc_v0}"
 RUN_ROOT="${RUN_ROOT:-$REPO_ROOT/conditioning_interface_matrix_runs/$RUN_ID}"
@@ -21,7 +21,18 @@ CLASSIFIER_REPEATS="${CLASSIFIER_REPEATS:-2}"
 MAX_PARALLEL_EVALS="${MAX_PARALLEL_EVALS:-2}"
 NUM_WORKERS="${NUM_WORKERS:-2}"
 DIFFUSERS_SRC="${DIFFUSERS_SRC:-}"
-REUSE_INDEXES="${REUSE_INDEXES:-}"
+
+# Reuse compatible completed cells by default. Additional strength-run indexes
+# can still be appended explicitly through REUSE_INDEXES.
+default_reuse_indexes=()
+for candidate in \
+  "$BASE_RUN_ROOT/evaluation_index.json" \
+  "$CAUSAL_RUN_ROOT/evaluation_index.json" \
+  "$GENERALITY_RUN_ROOT/evaluation_index.json"; do
+  [[ -f "$candidate" ]] && default_reuse_indexes+=("$candidate")
+done
+explicit_reuse_indexes="${REUSE_INDEXES:-}"
+REUSE_INDEXES="${default_reuse_indexes[*]}${explicit_reuse_indexes:+ $explicit_reuse_indexes}"
 
 read -r -a matrix_args <<< "$MATRICES"
 read -r -a training_seed_args <<< "$TRAINING_SEEDS"
@@ -29,8 +40,16 @@ read -r -a generation_seed_args <<< "$GENERATION_SEEDS"
 read -r -a reuse_index_args <<< "$REUSE_INDEXES"
 
 if [[ " $MATRICES " == *" C "* ]]; then
-  : "${WOOF_DATA_ROOT:?Set WOOF_DATA_ROOT when Matrix C is enabled}"
-  : "${WOOF_CAPTION_FILE:?Set WOOF_CAPTION_FILE when Matrix C is enabled}"
+  WOOF_DATA_ROOT="${WOOF_DATA_ROOT:-$(dirname "$NETTE_DATA_ROOT")/ImageWoof}"
+  if [[ -z "${WOOF_CAPTION_FILE:-}" ]]; then
+    for candidate in "$WOOF_DATA_ROOT/train/woof.jsonl" "$WOOF_DATA_ROOT/woof.jsonl" "$WOOF_DATA_ROOT/train/metadata.jsonl"; do
+      if [[ -f "$candidate" ]]; then
+        WOOF_CAPTION_FILE="$candidate"
+        break
+      fi
+    done
+    WOOF_CAPTION_FILE="${WOOF_CAPTION_FILE:-$WOOF_DATA_ROOT/train/woof.jsonl}"
+  fi
 fi
 
 args=(

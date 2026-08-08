@@ -183,7 +183,7 @@ Run LLaVA on `/linxi/dataset/VLCP/ImageWoof/llava_questions.jsonl`, then merge a
 python experiments/prior_alignment_ablation/merge_llava_answers.py \
   --questions /linxi/dataset/VLCP/ImageWoof/llava_questions.jsonl \
   --answers /path/to/answers/*.jsonl \
-  --output /linxi/dataset/VLCP/ImageWoof/train/metadata.jsonl
+  --output /linxi/dataset/VLCP/ImageWoof/train/woof.jsonl
 ```
 
 After captions are complete, resume the same run with only the held-out replication phase:
@@ -192,7 +192,7 @@ After captions are complete, resume the same run with only the held-out replicat
 NETTE_DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
 NETTE_CAPTION_FILE=/linxi/dataset/VLCP/ImageNette/train/nette.jsonl \
 WOOF_DATA_ROOT=/linxi/dataset/VLCP/ImageWoof \
-WOOF_CAPTION_FILE=/linxi/dataset/VLCP/ImageWoof/train/metadata.jsonl \
+WOOF_CAPTION_FILE=/linxi/dataset/VLCP/ImageWoof/train/woof.jsonl \
 BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
 BASE_RUN_ROOT=/path/to/text_supervision_factorial_2xa100_v0 \
 CAUSAL_RUN_ROOT=/path/to/text_supervision_causal_ladder_v0 \
@@ -271,17 +271,25 @@ nohup env \
   NETTE_DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
   NETTE_CAPTION_FILE=/linxi/dataset/VLCP/ImageNette/train/nette.jsonl \
   WOOF_DATA_ROOT=/linxi/dataset/VLCP/ImageWoof \
-  WOOF_CAPTION_FILE=/linxi/dataset/VLCP/ImageWoof/train/metadata.jsonl \
+  WOOF_CAPTION_FILE=/linxi/dataset/VLCP/ImageWoof/train/woof.jsonl \
   BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
-  BASE_RUN_ROOT=/path/to/text_supervision_factorial_2xa100_v0 \
-  CAUSAL_RUN_ROOT=/path/to/text_supervision_causal_ladder_v0 \
-  GENERALITY_RUN_ROOT=/path/to/text_supervision_generality_v0 \
+  BASE_RUN_ROOT=./text_supervision_factorial_runs/text_supervision_factorial_2xa100_v0 \
+  CAUSAL_RUN_ROOT=./text_supervision_factorial_runs/text_supervision_causal_ladder_v0 \
+  GENERALITY_RUN_ROOT=./text_supervision_generality_runs/text_supervision_generality_v0 \
   REUSE_INDEXES="/path/to/strength_prompt_interaction_v0/evaluation_index.json /path/to/text_supervision_generality_v0/evaluation_index.json" \
   RUN_ID=conditioning_interface_abc_v0 GPU_IDS=0,1,2,3 \
   DIFFUSERS_SRC=/linxi/packages/VLCP/diffusers/src \
   bash experiments/text_supervision_factorial/run_conditioning_interface_matrix.sh \
   > conditioning_interface_abc_v0.log 2>&1 < /dev/null &
 ```
+
+`NETTE_CAPTION_FILE` defaults to `$NETTE_DATA_ROOT/train/nette.jsonl`. When Matrix C is enabled,
+`WOOF_DATA_ROOT` defaults to the sibling `ImageWoof` directory and `WOOF_CAPTION_FILE` prefers
+`$WOOF_DATA_ROOT/train/woof.jsonl` (with root-level `woof.jsonl` and legacy `train/metadata.jsonl` fallbacks).
+The declared ImageNette/model/historical-run paths are also built-in defaults, while every value remains
+overridable through the environment. Compatible `evaluation_index.json` files under the three historical
+run roots are discovered automatically; use `REUSE_INDEXES` only to append indexes from separate runs such as
+the earlier strength sweep.
 
 Resume with the identical command and `RUN_ID`. `run_manifest.json` rejects changed paths or settings. To run a
 subset without changing code, set `MATRICES="A B"` and use a different `RUN_ID`.
