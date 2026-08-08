@@ -212,3 +212,30 @@ python experiments/text_supervision_factorial/summarize_generality.py \
     text_supervision_generality_runs/text_supervision_generality_woof_v0/evaluation_index.json \
   --output-dir text_supervision_generality_runs/combined_summary
 ```
+## Prototype-strength x prompt interaction
+
+`run_strength_interaction.sh` tests a different estimand from a standard D4M strength sweep. It fixes the
+`matched_ft` generator and CFG, then measures the paired marginal value of cluster text,
+`A_correct(strength) - A_label(strength)`, across prototype initialization strengths and IPC values. The default
+grid is strength `{0.7, 0.8, 0.9, 1.0}`, IPC `{10, 50}`, training seeds `{0, 1}`, and generation seeds `{0, 1}`.
+
+The scheduler validates and reuses exact strength-0.7 cells from the original factorial, causal-ladder, and
+generality runs. Missing cells, including matched-FT Label at IPC50, are generated and evaluated in the new run.
+All new outputs are isolated by IPC, strength, training seed, and generation seed.
+
+```bash
+NETTE_DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
+BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
+BASE_RUN_ROOT=/path/to/original_text_supervision_run \
+CAUSAL_RUN_ROOT=/path/to/text_supervision_causal_ladder_run \
+GENERALITY_RUN_ROOT=/path/to/text_supervision_generality_run \
+RUN_ID=strength_prompt_interaction_v0 \
+GPU_IDS=0,1 \
+bash experiments/text_supervision_factorial/run_strength_interaction.sh
+```
+
+The process ignores `SIGHUP`, retries failed tasks indefinitely by default, and writes scheduler state under the
+run root. Re-running the same command resumes. Primary outputs are `summary/prompt_utility.csv`,
+`summary/interactions_relative_to_0p7.csv`, `summary/ipc_interactions.csv`, and
+`summary/strength_interaction_summary.png`. The descriptive
+best-strength table is exploratory; it is not an unbiased post-selection estimate.
