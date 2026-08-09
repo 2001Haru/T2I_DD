@@ -83,42 +83,78 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evaluation-index", required=True)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--allow-incomplete", action="store_true")
+    parser.add_argument("--matrices", nargs="+")
+    parser.add_argument("--specs", nargs="+")
+    parser.add_argument("--ipcs", type=int, nargs="+")
     args = parser.parse_args()
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    index = json.loads(Path(args.evaluation_index).read_text(encoding="utf-8"))
+    full_index = json.loads(Path(args.evaluation_index).read_text(encoding="utf-8"))
+    index = [
+        item for item in full_index
+        if (not args.matrices or item["matrix"] in args.matrices)
+        and (not args.specs or item["spec"] in args.specs)
+        and (not args.ipcs or int(item["ipc"]) in args.ipcs)
+    ]
+    if not index:
+        raise ValueError("No evaluation cells match the requested filters")
 
-    cells, lookup = [], {}
+    cells, lookup, planned_lookup, incomplete = [], {}, {}, []
     for item in index:
-        scores = read_scores(item["evaluation_log"])
+        shift = int(item.get("shuffle_shift") or 1) if item["prompt"] == "shuffled" else None
+        visual = visual_label(item)
+        key = (
+            item["matrix"], item["spec"], int(item["ipc"]), visual, item["supervision"],
+            item.get("training_seed"), int(item["generation_seed"]), item["prompt"], shift,
+        )
+        if key in planned_lookup:
+            raise RuntimeError(f"Duplicate planned evaluation cell: {key}")
+        planned_lookup[key] = item
+        try:
+            scores = read_scores(item["evaluation_log"])
+        except (FileNotFoundError, ValueError) as error:
+            if not args.allow_incomplete:
+                raise
+            incomplete.append({
+                "matrix": item["matrix"], "spec": item["spec"], "ipc": int(item["ipc"]),
+                "visual": visual, "supervision": item["supervision"],
+                "training_seed": item.get("training_seed"),
+                "generation_seed": int(item["generation_seed"]), "prompt": item["prompt"],
+                "shuffle_shift": shift, "evaluation_log": item["evaluation_log"],
+                "reason": str(error),
+            })
+            continue
         row = {
-            **item, "visual": visual_label(item), "mean_accuracy": statistics.fmean(scores),
+            **item, "visual": visual, "mean_accuracy": statistics.fmean(scores),
             "std_accuracy": statistics.pstdev(scores), "classifier_accuracies": scores,
         }
         cells.append(row)
-        shift = int(item.get("shuffle_shift") or 1) if item["prompt"] == "shuffled" else None
-        key = (
-            item["matrix"], item["spec"], int(item["ipc"]), row["visual"], item["supervision"],
-            item.get("training_seed"), int(item["generation_seed"]), item["prompt"], shift,
-        )
         if key in lookup:
             raise RuntimeError(f"Duplicate evaluation cell: {key}")
         lookup[key] = scores
 
-    groups = sorted({key[:7] for key in lookup}, key=str)
+    groups = sorted({key[:7] for key in planned_lookup}, key=str)
     normalized = []
     for group in groups:
         prefix = group
         label = lookup.get((*prefix, "label", None))
         correct = lookup.get((*prefix, "correct", None))
-        shifts = sorted(key[-1] for key in lookup if key[:7] == prefix and key[7] == "shuffled")
-        shuffled_vectors = [lookup[(*prefix, "shuffled", shift)] for shift in shifts]
-        shuffled = mean_vectors(shuffled_vectors) if shuffled_vectors else None
+        planned_shifts = sorted(
+            key[-1] for key in planned_lookup if key[:7] == prefix and key[7] == "shuffled"
+        )
+        completed_shifts = sorted(
+            key[-1] for key in lookup if key[:7] == prefix and key[7] == "shuffled"
+        )
+        all_shifts_complete = bool(planned_shifts) and completed_shifts == planned_shifts
+        shuffled = mean_vectors([
+            lookup[(*prefix, "shuffled", shift)] for shift in planned_shifts
+        ]) if all_shifts_complete else None
         shuffled_primary = lookup.get((*prefix, "shuffled", 1))
         metadata = {
             "matrix": prefix[0], "spec": prefix[1], "ipc": prefix[2], "visual": prefix[3],
             "supervision": prefix[4], "training_seed": prefix[5], "generation_seed": prefix[6],
-            "shuffle_shifts": shifts,
+            "shuffle_shifts": completed_shifts, "planned_shuffle_shifts": planned_shifts,
         }
         if label is not None:
             normalized.append({**metadata, "prompt": "label", "values": label})
@@ -201,6 +237,20 @@ def main():
 
     payload = {
         "format_version": 1,
+        "partial_summary": args.allow_incomplete,
+        "filters": {"matrices": args.matrices, "specs": args.specs, "ipcs": args.ipcs},
+        "coverage": {
+            "planned_evaluation_cells": len(index), "completed_evaluation_cells": len(cells),
+            "incomplete_evaluation_cells": len(incomplete),
+            "completion_fraction": len(cells) / len(index),
+            "complete_primary_triplets": sum(
+                all(key in lookup for key in (
+                    (*group, "label", None), (*group, "correct", None), (*group, "shuffled", 1)
+                ))
+                for group in groups
+            ),
+            "planned_primary_triplets": len(groups),
+        },
         "estimands": {
             "prompt_marginal_primary": "shuffle shift 1-label at every visual setting",
             "correspondence_primary": "correct-shuffle shift 1 at every visual setting",
@@ -236,6 +286,10 @@ def main():
     write_csv(output / "shuffle_shift_effects.csv", shift_effects, (
         "matrix", "spec", "ipc", "visual", "supervision", "training_seed", "generation_seed",
         "shuffle_shift", "contrast", "mean_paired_difference", "paired_differences",
+    ))
+    write_csv(output / "incomplete_cells.csv", incomplete, (
+        "matrix", "spec", "ipc", "visual", "supervision", "training_seed", "generation_seed",
+        "prompt", "shuffle_shift", "evaluation_log", "reason",
     ))
     plot(performance, contrasts, output / "conditioning_interface_matrix_summary.png")
     print(json.dumps({"performance_rows": len(performance), "contrast_rows": len(contrasts)}, indent=2))

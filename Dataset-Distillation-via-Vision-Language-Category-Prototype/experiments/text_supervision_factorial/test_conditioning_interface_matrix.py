@@ -94,6 +94,39 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
             self.assertEqual(correspondence["mean"], 4.0)
             self.assertEqual(correspondence["training_generation_cells"], 1)
 
+    def test_partial_summary_skips_missing_cells_without_partial_shift_average(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            index = []
+            for prompt, shift, scores in (
+                ("label", None, [50, 50]), ("correct", None, [60, 60]),
+                ("shuffled", 1, [55, 55]), ("shuffled", 2, None),
+            ):
+                log = root / f"{prompt}_{shift}.log"
+                if scores is not None:
+                    log.write_text(f"Best, last acc:----{scores}\n", encoding="utf-8")
+                index.append({
+                    "matrix": "A", "spec": "nette", "ipc": 20, "visual_mode": "prototype",
+                    "strength": 0.8, "supervision": "matched_ft", "training_seed": 0,
+                    "generation_seed": 0, "prompt": prompt, "shuffle_shift": shift,
+                    "evaluation_log": str(log), "source": "fixture",
+                })
+            index_path = root / "index.json"
+            index_path.write_text(json.dumps(index), encoding="utf-8")
+            subprocess.run([
+                sys.executable, str(HERE / "summarize_conditioning_interface_matrix.py"),
+                "--evaluation-index", str(index_path), "--output-dir", str(root / "summary"),
+                "--allow-incomplete", "--matrices", "A", "--specs", "nette", "--ipcs", "10", "20",
+            ], check=True, capture_output=True, text=True)
+            summary = json.loads(
+                (root / "summary" / "conditioning_interface_matrix_summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(summary["coverage"]["planned_evaluation_cells"], 4)
+            self.assertEqual(summary["coverage"]["completed_evaluation_cells"], 3)
+            names = {row["contrast"] for row in summary["contrasts"]}
+            self.assertIn("correct_minus_shuffled_s1", names)
+            self.assertNotIn("correct_minus_shuffled_mean_robustness", names)
+
 
 if __name__ == "__main__":
     unittest.main()
