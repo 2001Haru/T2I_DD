@@ -31,6 +31,14 @@ HERE = Path(__file__).resolve().parent
 CORE_STRENGTHS = (0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.00)
 CONTROL_STRENGTHS = (0.70, 0.80, 0.90, 1.00)
 SHUFFLE_SHIFTS = (1, 2, 4, 7)
+WOOF_TRAIN_SUPERVISION = {
+    "empty_ft": "empty",
+    "constant_ft": "constant",
+    "label_ft": "label",
+    "unpaired_ft": "unpaired",
+    "matched_ft": "matched",
+}
+WOOF_PHASES = ("ladder", "curve_ipc10_20", "curve_ipc50")
 
 
 def parse_args():
@@ -45,8 +53,13 @@ def parse_args():
     parser.add_argument("--generality-run-root", required=True)
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--reuse-index", action="append", default=[])
+    parser.add_argument(
+        "--allow-d-regeneration", action="store_true",
+        help="Allow Matrix D to regenerate existing Label/Correct IPC50 cells instead of requiring reuse",
+    )
     parser.add_argument("--gpus", default="0,1,2,3")
-    parser.add_argument("--matrices", nargs="+", choices=("A", "B", "C"), default=("A", "B", "C"))
+    parser.add_argument("--matrices", nargs="+", choices=("A", "B", "C", "D"), default=("A", "B", "C"))
+    parser.add_argument("--woof-phases", nargs="+", choices=WOOF_PHASES, default=WOOF_PHASES)
     parser.add_argument("--training-seeds", type=int, nargs="+", default=(0, 1))
     parser.add_argument("--generation-seeds", type=int, nargs="+", default=(0, 1))
     parser.add_argument("--classifier-repeats", type=int, default=2)
@@ -60,6 +73,10 @@ def parse_args():
     parser.add_argument("--max-parallel-evals", type=int, default=2)
     parser.add_argument("--retry-delay-seconds", type=int, default=120)
     parser.add_argument("--max-retries", type=int, default=0, help="0 retries forever")
+    parser.add_argument(
+        "--max-walltime-hours", type=float, default=0.0,
+        help="Stop launching new tasks after this many hours, then wait for active tasks and exit cleanly; 0 disables",
+    )
     parser.add_argument("--diffusers-src", default="")
     return parser.parse_args()
 
@@ -137,7 +154,7 @@ def generation_command(args, prototype, dcs, model, supervision, prompts, output
 
 def add_generation(tasks, index, args, reuse, matrix, spec, data_root, ipc, prototype, dcs,
                    model, supervision, training_seed, generation_seed, strength, visual_mode,
-                   prompts, shuffle_shift, dependencies=()):
+                   prompts, shuffle_shift, dependencies=(), stage=None, phase=None):
     visual_token = strength_token(strength)
     seed_token = "frozen" if training_seed is None else f"train_seed_{training_seed}"
     shift_token = f"shift_{shuffle_shift}"
@@ -153,6 +170,7 @@ def add_generation(tasks, index, args, reuse, matrix, spec, data_root, ipc, prot
             "num_inference_steps": args.num_inference_steps, "supervision": supervision,
             "training_seed": training_seed, "generation_seed": generation_seed,
             "prompt": prompt, "shuffle_shift": shuffle_shift if prompt == "shuffled" else None,
+            "phase": phase,
         }
         reused = reuse.get(cell_key(metadata))
         if reused:
@@ -163,14 +181,15 @@ def add_generation(tasks, index, args, reuse, matrix, spec, data_root, ipc, prot
         return
 
     prefix = (
-        f"{matrix}_{spec}_ipc{ipc}_{visual_token}_{seed_token}_g{generation_seed}_s{shuffle_shift}_" +
+        f"{matrix}_{spec}_ipc{ipc}_{visual_token}_{seed_token}_{supervision}_"
+        f"g{generation_seed}_s{shuffle_shift}_" +
         "-".join(missing)
     )
     generation_name = f"gen_{prefix}"
     seed_root = output_root / f"seed_{generation_seed}"
     conditions = [f"{supervision}_{prompt}" for prompt in missing]
     tasks[generation_name] = Task(
-        generation_name, ord(matrix), "generate",
+        generation_name, ord(matrix) if stage is None else stage, "generate",
         generation_command(
             args, prototype, dcs, model, supervision, missing, output_root,
             generation_seed, ipc, strength, visual_mode, shuffle_shift,
@@ -186,7 +205,7 @@ def add_generation(tasks, index, args, reuse, matrix, spec, data_root, ipc, prot
         )
         synthetic = seed_root / condition
         tasks[eval_name] = Task(
-            eval_name, ord(matrix), "eval",
+            eval_name, ord(matrix) if stage is None else stage, "eval",
             eval_command(args, synthetic, data_root, ipc, spec, eval_name),
             EVAL_DIR, log, complete_eval(log), dependencies=(generation_name,),
         )
@@ -196,23 +215,24 @@ def add_generation(tasks, index, args, reuse, matrix, spec, data_root, ipc, prot
             "num_inference_steps": args.num_inference_steps, "supervision": supervision,
             "training_seed": training_seed, "generation_seed": generation_seed,
             "prompt": prompt, "shuffle_shift": shuffle_shift if prompt == "shuffled" else None,
+            "phase": phase,
             "synthetic_dir": str(synthetic), "evaluation_log": str(log), "source": "new",
         })
 
 
 def add_prompt_grid(tasks, index, args, reuse, matrix, spec, data_root, ipc, prototype, dcs,
                     model, supervision, training_seed, generation_seed, strength, visual_mode,
-                    extra_shifts=(), dependencies=()):
+                    extra_shifts=(), dependencies=(), stage=None, phase=None):
     add_generation(
         tasks, index, args, reuse, matrix, spec, data_root, ipc, prototype, dcs, model,
         supervision, training_seed, generation_seed, strength, visual_mode,
-        ("label", "correct", "shuffled"), 1, dependencies,
+        ("label", "correct", "shuffled"), 1, dependencies, stage, phase,
     )
     for shift in extra_shifts:
         add_generation(
             tasks, index, args, reuse, matrix, spec, data_root, ipc, prototype, dcs, model,
             supervision, training_seed, generation_seed, strength, visual_mode,
-            ("shuffled",), shift, dependencies,
+            ("shuffled",), shift, dependencies, stage, phase,
         )
 
 
@@ -223,6 +243,26 @@ def build_tasks(args, reuse):
     logs.mkdir(parents=True, exist_ok=True)
     nette_root = Path(args.nette_data_root).resolve()
     woof_root = Path(args.woof_data_root).resolve() if args.woof_data_root else None
+
+    # Targeted ImageNette follow-up: existing Correct/Label cells are reused and
+    # only missing IPC50 Shuffled-S1 cells are generated in practice.
+    if "D" in args.matrices:
+        ipc = 50
+        prototype, dcs = nette_artifacts(args, ipc)
+        for artifact in (prototype, dcs):
+            if not artifact.is_file():
+                raise FileNotFoundError(artifact)
+        for training_seed in args.training_seeds:
+            model = nette_model(args, "matched_ft", training_seed)
+            if not complete_model(model)():
+                raise RuntimeError(f"Missing Matched-FT checkpoint: {model}")
+            for strength in CONTROL_STRENGTHS:
+                for generation_seed in args.generation_seeds:
+                    add_prompt_grid(
+                        tasks, index, args, reuse, "D", "nette", nette_root, ipc, prototype, dcs,
+                        model, "matched_ft", training_seed, generation_seed, strength, "prototype",
+                        stage=1, phase="nette_ipc50_correspondence",
+                    )
 
     if "A" in args.matrices:
         for ipc in (10, 20, 50):
@@ -264,36 +304,99 @@ def build_tasks(args, reuse):
     if "C" in args.matrices:
         woof_caption = Path(args.woof_caption_file).resolve()
         train_names = {}
-        for training_seed in args.training_seeds:
-            model = run_root / "models" / "woof" / f"train_seed_{training_seed}" / "matched_ft"
-            name = f"train_C_woof_s{training_seed}_matched_ft"
-            train_names[training_seed] = name
-            tasks[name] = Task(
-                name, ord("C"), "train",
-                train_command(args, woof_root, woof_caption, model, "matched", training_seed),
-                REPO_ROOT, logs / f"{name}.log", complete_model(model),
-            )
-        for ipc in (10, 50):
+        if "ladder" in args.woof_phases:
+            required_supervisions = tuple(WOOF_TRAIN_SUPERVISION)
+        elif "curve_ipc10_20" in args.woof_phases:
+            required_supervisions = ("empty_ft", "matched_ft")
+        else:
+            required_supervisions = ("matched_ft",)
+        for supervision in required_supervisions:
+            train_supervision = WOOF_TRAIN_SUPERVISION[supervision]
+            for training_seed in args.training_seeds:
+                model = run_root / "models" / "woof" / f"train_seed_{training_seed}" / supervision
+                name = f"train_C_woof_s{training_seed}_{supervision}"
+                train_names[(supervision, training_seed)] = name
+                tasks[name] = Task(
+                    name, 2, "train",
+                    train_command(args, woof_root, woof_caption, model, train_supervision, training_seed),
+                    REPO_ROOT, logs / f"{name}.log", complete_model(model),
+                )
+
+        required_ipcs = {10}
+        if "curve_ipc10_20" in args.woof_phases:
+            required_ipcs.add(20)
+        if "curve_ipc50" in args.woof_phases:
+            required_ipcs.add(50)
+        artifacts = {}
+        for ipc in sorted(required_ipcs):
             artifact_root = run_root / "artifacts" / "woof" / f"ipc{ipc}"
             prototype = artifact_root / f"woof-ipc{ipc}-0.7-30-kmexpand1.json"
             dcs = artifact_root / "dcs.json"
             artifact_name = f"artifact_C_woof_ipc{ipc}"
+            artifacts[ipc] = (prototype, dcs, artifact_name)
             tasks[artifact_name] = Task(
-                artifact_name, ord("C"), "artifact",
+                artifact_name, 2 if ipc == 10 else (3 if ipc == 20 else 4), "artifact",
                 prototype_command(args, "woof", woof_root, woof_caption, ipc, artifact_root, dcs),
                 DISTILLATION_DIR, logs / f"{artifact_name}.log",
                 lambda p=prototype, d=dcs: p.is_file() and d.is_file(),
             )
-            for training_seed in args.training_seeds:
-                model = run_root / "models" / "woof" / f"train_seed_{training_seed}" / "matched_ft"
-                dependencies = (train_names[training_seed], artifact_name)
-                for strength in (*CONTROL_STRENGTHS, None):
+
+        # C1: the full causal ladder at one established visual interface and at
+        # pure noise. This is the minimum complete ImageWoof replication.
+        if "ladder" in args.woof_phases:
+            prototype, dcs, artifact_name = artifacts[10]
+            regimes = [("frozen", None)] + [
+                (supervision, seed)
+                for supervision in WOOF_TRAIN_SUPERVISION
+                for seed in args.training_seeds
+            ]
+            for supervision, training_seed in regimes:
+                if supervision == "frozen":
+                    model = Path(args.base_model).resolve()
+                    dependencies = (artifact_name,)
+                else:
+                    model = run_root / "models" / "woof" / f"train_seed_{training_seed}" / supervision
+                    dependencies = (train_names[(supervision, training_seed)], artifact_name)
+                for strength in (0.70, None):
                     visual_mode = "pure_noise" if strength is None else "prototype"
                     for generation_seed in args.generation_seeds:
                         add_prompt_grid(
+                            tasks, index, args, reuse, "C", "woof", woof_root, 10, prototype, dcs,
+                            model, supervision, training_seed, generation_seed, strength, visual_mode,
+                            dependencies=dependencies, stage=2, phase="woof_causal_ladder",
+                        )
+
+        # C2/C3: Matched-FT strength curves. IPC10 omits 0.70 because C1 already
+        # owns that exact cell; IPC20/50 use all four preregistered strengths.
+        curve_specs = []
+        if "curve_ipc10_20" in args.woof_phases:
+            curve_specs.extend((
+                (10, (0.80, 0.90, 1.00), 3, ("frozen", "empty_ft", "matched_ft")),
+                (20, CONTROL_STRENGTHS, 3, ("matched_ft",)),
+            ))
+        if "curve_ipc50" in args.woof_phases:
+            curve_specs.append((50, CONTROL_STRENGTHS, 4, ("matched_ft",)))
+        for ipc, strengths, stage, supervisions in curve_specs:
+            prototype, dcs, artifact_name = artifacts[ipc]
+            regimes = [
+                (supervision, None if supervision == "frozen" else training_seed)
+                for supervision in supervisions
+                for training_seed in ((None,) if supervision == "frozen" else args.training_seeds)
+            ]
+            for supervision, training_seed in regimes:
+                if supervision == "frozen":
+                    model = Path(args.base_model).resolve()
+                    dependencies = (artifact_name,)
+                else:
+                    model = run_root / "models" / "woof" / f"train_seed_{training_seed}" / supervision
+                    dependencies = (train_names[(supervision, training_seed)], artifact_name)
+                for strength in strengths:
+                    for generation_seed in args.generation_seeds:
+                        add_prompt_grid(
                             tasks, index, args, reuse, "C", "woof", woof_root, ipc, prototype, dcs,
-                            model, "matched_ft", training_seed, generation_seed, strength, visual_mode,
-                            dependencies=dependencies,
+                            model, supervision, training_seed, generation_seed, strength, "prototype",
+                            dependencies=dependencies, stage=stage,
+                            phase=f"woof_strength_curve_ipc{ipc}",
                         )
     return tasks, index
 
@@ -315,8 +418,16 @@ def write_manifest(args, index):
             "strengths": list(CONTROL_STRENGTHS), "pure_noise": True, "shuffle_shift": 1,
         },
         "matrix_C": {
-            "spec": "woof", "supervision": "matched_ft", "ipc": [10, 50],
-            "strengths": list(CONTROL_STRENGTHS), "pure_noise": True, "shuffle_shift": 1,
+            "spec": "woof", "phases": list(args.woof_phases),
+            "causal_ladder_supervisions": ["frozen", *WOOF_TRAIN_SUPERVISION],
+            "causal_ladder_ipc": 10, "causal_ladder_interfaces": [0.7, "pure_noise"],
+            "curve_ipc10_supervisions": ["frozen", "empty_ft", "matched_ft"],
+            "curve_ipc20_50_supervision": "matched_ft", "curve_ipc": [10, 20, 50],
+            "curve_strengths": list(CONTROL_STRENGTHS), "shuffle_shift": 1,
+        },
+        "matrix_D": {
+            "spec": "nette", "supervision": "matched_ft", "ipc": 50,
+            "strengths": list(CONTROL_STRENGTHS), "shuffle_shift": 1,
         },
         "prompts": ["label", "correct", "shuffled"],
         "training_seeds": list(args.training_seeds), "generation_seeds": list(args.generation_seeds),
@@ -349,7 +460,12 @@ def choose_ready(tasks, completed, running, now, evals, max_evals):
         if task.name not in completed and task.name not in running_names and task.next_ready <= now
         and all(dependency in completed for dependency in task.dependencies)
     ]
-    # Train Woof immediately, then keep up to two evaluation lanes beside generation.
+    if not ready:
+        return None
+    # Honor scientific phase priority. Later phases may fill otherwise idle GPUs
+    # only when no task from the current phase is ready.
+    earliest_stage = min(task.stage for task in ready)
+    ready = [task for task in ready if task.stage == earliest_stage]
     trains = sorted((task for task in ready if task.kind == "train"), key=lambda task: task.name)
     if trains:
         return trains[0]
@@ -386,6 +502,19 @@ def main():
     run_root.mkdir(parents=True, exist_ok=True)
     reuse = load_reuse_catalog(args.reuse_index)
     tasks, index = build_tasks(args, reuse)
+    if "D" in args.matrices and not args.allow_d_regeneration:
+        reusable_d_controls = sum(
+            row["matrix"] == "D" and row["prompt"] in {"label", "correct"}
+            and row["source"] == "reused"
+            for row in index
+        )
+        expected_d_controls = len(CONTROL_STRENGTHS) * len(args.training_seeds) * len(args.generation_seeds) * 2
+        if reusable_d_controls != expected_d_controls:
+            raise RuntimeError(
+                f"Matrix D expected {expected_d_controls} reusable Label/Correct cells but found "
+                f"{reusable_d_controls}. Add the completed strength-sweep evaluation_index.json, or pass "
+                "--allow-d-regeneration intentionally."
+            )
     write_manifest(args, index)
     completed = {name for name, task in tasks.items() if task.complete()}
     running = {}
@@ -394,6 +523,8 @@ def main():
         f"{len(completed)}/{len(tasks)} tasks complete on GPUs {gpus}", flush=True,
     )
     write_scheduler_state(run_root, tasks, completed, running)
+    started_at = time.time()
+    deadline = started_at + args.max_walltime_hours * 3600 if args.max_walltime_hours > 0 else None
     while len(completed) < len(tasks):
         now = time.time()
         for gpu, task in list(running.items()):
@@ -417,14 +548,28 @@ def main():
                     raise RuntimeError(f"Task exhausted retries: {task.name}; see {archived}")
                 task.next_ready = time.time() + args.retry_delay_seconds
                 print(f"RETRY in {args.retry_delay_seconds}s: {task.name}; see {archived}", flush=True)
-        free = [gpu for gpu in gpus if gpu not in running]
-        for gpu in free:
-            evals = sum(task.kind == "eval" for task in running.values())
-            selected = choose_ready(tasks, completed, running, now, evals, args.max_parallel_evals)
-            if selected is None:
-                break
-            launch(selected, gpu, args)
-            running[gpu] = selected
+        if deadline is None or now < deadline:
+            free = [gpu for gpu in gpus if gpu not in running]
+            for gpu in free:
+                evals = sum(task.kind == "eval" for task in running.values())
+                selected = choose_ready(tasks, completed, running, now, evals, args.max_parallel_evals)
+                if selected is None:
+                    break
+                launch(selected, gpu, args)
+                running[gpu] = selected
+        elif not running:
+            print(
+                f"Walltime reached after {(now - started_at) / 3600:.2f}h; "
+                "active tasks finished and scheduler state is safe to resume.",
+                flush=True,
+            )
+            write_scheduler_state(run_root, tasks, completed, running)
+            subprocess.run([
+                sys.executable, str(HERE / "summarize_conditioning_interface_matrix.py"),
+                "--evaluation-index", str(run_root / "evaluation_index.json"),
+                "--output-dir", str(run_root / "summary_partial"), "--allow-incomplete",
+            ], cwd=REPO_ROOT, check=True)
+            return
         write_scheduler_state(run_root, tasks, completed, running)
         time.sleep(5)
     subprocess.run([
@@ -433,7 +578,7 @@ def main():
         "--output-dir", str(run_root / "summary"),
     ], cwd=REPO_ROOT, check=True)
     (run_root / "COMPLETE").write_text(time.strftime("%F %T\n"), encoding="utf-8")
-    print(f"A/B/C conditioning-interface matrix complete: {run_root}")
+    print(f"Conditioning-interface matrices {','.join(args.matrices)} complete: {run_root}")
 
 
 if __name__ == "__main__":

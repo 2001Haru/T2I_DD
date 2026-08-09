@@ -253,16 +253,21 @@ condition. The only prompt conditions are Label, Correct DCS, and within-class S
 |---|---|---|---|---|
 | A | ImageNette Matched-FT, training seeds 0/1 | 10, 20, 50 | strength 0.70 to 1.00 in 0.05 increments | L/C/S1 everywhere; S2/S4/S7 at 0.7/0.8/0.9/1.0 |
 | B | ImageNette Frozen and Empty-FT seeds 0/1 | 10, 50 | strength 0.7/0.8/0.9/1.0 plus true pure-noise T2I | L/C/S1 |
-| C | ImageWoof Matched-FT, training seeds 0/1 | 10, 50 | strength 0.7/0.8/0.9/1.0 plus true pure-noise T2I | L/C/S1 |
+| C1 | ImageWoof Frozen + Empty/Constant/Label/Unpaired/Matched-FT | 10 | strength 0.7 and true pure-noise T2I | L/C/S1 |
+| C2 | ImageWoof Frozen/Empty/Matched at IPC10; Matched-FT at IPC20/50 | 10, 20, 50 | strength 0.7/0.8/0.9/1.0 | L/C/S1 |
+| D | ImageNette Matched-FT, training seeds 0/1 | 50 | strength 0.7/0.8/0.9/1.0 | L/C/S1; intended to reuse L/C |
 
-With generation seeds 0/1 and classifier repeat 2, the default manifest contains 396, 180, and 120 evaluation
-cells for A, B, and C respectively. `strength=1.0` remains an img2img cell; `pure_noise` uses
+With generation seeds 0/1 and classifier repeat 2, the default A/B/C manifest contains 396, 180, and 318
+evaluation cells respectively. Matrix C is phase-selectable: `ladder` has 132 cells,
+`curve_ipc10_20` adds 138, and `curve_ipc50` adds 48. Matrix D has 48 logical cells, but completed exact cells
+are read from reuse indexes instead of regenerated. `strength=1.0` remains an img2img cell; `pure_noise` uses
 `StableDiffusionPipeline` and is therefore a genuinely visual-free control.
 
-The scheduler is one persistent parent process. It starts both ImageWoof fine-tunes immediately, fills the other
-GPUs with artifacts/generation, keeps at most two classifier evaluations active to limit host RAM, ignores SSH
+The scheduler is one persistent parent process. It runs the required ImageWoof fine-tunes across available GPUs,
+fills later phases with artifacts/generation, keeps at most two classifier evaluations active to limit host RAM, ignores SSH
 `SIGHUP`, archives failed logs, and retries indefinitely. Existing exact cells can be reused through one or more
-prior `evaluation_index.json` files.
+prior `evaluation_index.json` files. `MAX_WALLTIME_HOURS` stops launching new work at the deadline, waits for active
+tasks, writes `summary_partial`, and exits cleanly. It is a runtime limit and can change between resumes.
 
 ```bash
 cd /linxi/T2I_DD/Dataset-Distillation-via-Vision-Language-Category-Prototype
@@ -277,11 +282,29 @@ nohup env \
   CAUSAL_RUN_ROOT=./text_supervision_factorial_runs/text_supervision_causal_ladder_v0 \
   GENERALITY_RUN_ROOT=./text_supervision_generality_runs/text_supervision_generality_v0 \
   REUSE_INDEXES="/path/to/strength_prompt_interaction_v0/evaluation_index.json /path/to/text_supervision_generality_v0/evaluation_index.json" \
-  RUN_ID=conditioning_interface_abc_v0 GPU_IDS=0,1,2,3 \
+  RUN_ID=conditioning_interface_abc_v1 GPU_IDS=0,1,2,3 \
   DIFFUSERS_SRC=/linxi/packages/VLCP/diffusers/src \
   bash experiments/text_supervision_factorial/run_conditioning_interface_matrix.sh \
-  > conditioning_interface_abc_v0.log 2>&1 < /dev/null &
+  > conditioning_interface_abc_v1.log 2>&1 < /dev/null &
 ```
+
+For the targeted follow-up, use a fresh run ID. The scheduler prioritizes the missing ImageNette IPC50 shuffled
+control, then the ImageWoof causal ladder, IPC10/20 curve, and IPC50 curve. A 13-hour invocation stops cleanly;
+repeat the identical command and run ID on subsequent nights to continue the same frozen manifest:
+
+```bash
+nohup env \
+  MATRICES="D C" WOOF_PHASES="ladder curve_ipc10_20 curve_ipc50" MAX_WALLTIME_HOURS=13 \
+  RUN_ID=conditioning_interface_generality_v0 GPU_IDS=0,1,2,3 \
+  REUSE_INDEXES="./strength_prompt_interaction_runs/strength_prompt_interaction_v0/evaluation_index.json ./conditioning_interface_matrix_runs/conditioning_interface_abc_v0/evaluation_index.json" \
+  bash experiments/text_supervision_factorial/run_conditioning_interface_matrix.sh \
+  > conditioning_interface_generality_v0.log 2>&1 < /dev/null &
+```
+Do not change `MATRICES`, `WOOF_PHASES`, seeds, or paths when resuming. `MAX_WALLTIME_HOURS` may be changed because
+it controls scheduling only and is deliberately excluded from the scientific manifest.
+When Matrix D is selected, startup requires all 32 existing Label/Correct IPC50 cells to be found in the reuse
+catalog. This prevents an incorrect index path from silently rerunning them. `ALLOW_D_REGENERATION=true` is an
+explicit escape hatch, not the recommended default.
 
 `NETTE_CAPTION_FILE` defaults to `$NETTE_DATA_ROOT/train/nette.jsonl`. When Matrix C is enabled,
 `WOOF_DATA_ROOT` defaults to the sibling `ImageWoof` directory and `WOOF_CAPTION_FILE` prefers

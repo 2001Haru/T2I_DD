@@ -46,6 +46,7 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
             nette_data_root=str(root / "nette"), nette_caption_file=str(root / "nette.jsonl"),
             woof_data_root=str(root / "woof"), woof_caption_file=str(root / "woof.jsonl"),
             matrices=("A", "B", "C"), training_seeds=(0, 1), generation_seeds=(0, 1),
+            woof_phases=("ladder", "curve_ipc10_20", "curve_ipc50"),
             guidance_scale=10.0, num_inference_steps=50, classifier_repeats=2,
             classifier_seed=0, train_batch_size=4, gradient_accumulation_steps=8,
             num_workers=2, mixed_precision="fp16", diffusers_src="",
@@ -57,10 +58,36 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
             args = self.make_args(root)
             tasks, index = build_tasks(args, {})
             counts = {matrix: sum(row["matrix"] == matrix for row in index) for matrix in "ABC"}
-            self.assertEqual(counts, {"A": 396, "B": 180, "C": 120})
-            self.assertEqual(len(index), 696)
+            self.assertEqual(counts, {"A": 396, "B": 180, "C": 318})
+            self.assertEqual(len(index), 894)
             self.assertTrue(tasks)
             self.assertEqual({row["prompt"] for row in index}, {"label", "correct", "shuffled"})
+
+    def test_targeted_nette_and_phased_woof_counts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = self.make_args(root)
+            args.matrices = ("C", "D")
+            tasks, index = build_tasks(args, {})
+            counts = {matrix: sum(row["matrix"] == matrix for row in index) for matrix in ("C", "D")}
+            self.assertEqual(counts, {"C": 318, "D": 48})
+            self.assertEqual(len(index), 366)
+            self.assertEqual(len(index), len({
+                (
+                    row["matrix"], row["spec"], row["ipc"], row["visual_mode"], row["strength"],
+                    row["supervision"], row["training_seed"], row["generation_seed"],
+                    row["prompt"], row["shuffle_shift"],
+                )
+                for row in index
+            }))
+
+            args.woof_phases = ("curve_ipc50",)
+            tasks, index = build_tasks(args, {})
+            self.assertEqual(sum(row["matrix"] == "C" for row in index), 48)
+            self.assertEqual(
+                {row["phase"] for row in index if row["matrix"] == "C"},
+                {"woof_strength_curve_ipc50"},
+            )
 
     def test_summary_averages_shuffle_realizations_before_correspondence(self):
         with tempfile.TemporaryDirectory() as temporary:
