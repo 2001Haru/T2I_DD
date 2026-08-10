@@ -330,5 +330,17 @@ before applying the hierarchical bootstrap. Its estimands are:
 - the corresponding `mean(Shuffled)` contrasts: randomization-robustness estimates at strengths with four shifts.
 
 Outputs are `summary/performance.csv`, `summary/contrasts.csv`, `summary/shuffle_shift_effects.csv`, and
-`summary/conditioning_interface_matrix_summary.json`. Shuffle shifts are randomization realizations, not
+`summary/conditioning_interface_matrix_summary.json`. The summarizer also performs preregistered paired
+difference-in-differences tests. It decomposes prompt utility into
+`descriptive_marginal = mean(Correct, Shuffled-S1) - Label` and
+`correspondence = Correct - Shuffled-S1`, then reports:
+
+- strength interactions relative to `strength=0.7`;
+- checkpoint x prompt interactions, including Matched-FT versus Frozen/Empty-FT;
+- ImageWoof minus ImageNette dataset interactions at matched IPC/strength/seeds;
+- dataset x strength interactions relative to `strength=0.7`.
+
+The estimates and hierarchical bootstrap intervals are written to `summary/formal_interactions.csv`; the
+underlying repeat-paired values are retained in `summary/formal_interaction_cells.csv`, and the overview plot is
+`summary/conditioning_interface_formal_interactions.png`. Shuffle shifts are randomization realizations, not
 independent experimental units.

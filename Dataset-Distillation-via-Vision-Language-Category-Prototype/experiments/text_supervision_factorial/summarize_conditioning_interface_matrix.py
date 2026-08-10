@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize the A/B/C matrix without treating shuffle shifts as independent samples."""
+"""Summarize conditioning-interface matrices with paired causal interactions."""
 
 import argparse
 import ast
@@ -65,6 +65,50 @@ def summarize(rows):
         "training_generation_cells": len(rows),
         "paired_classifier_observations": len(values),
     }
+
+
+def effect_vectors(normalized_lookup):
+    """Build prompt effects before any seed averaging."""
+    effects = {}
+    groups = sorted({key[:7] for key in normalized_lookup}, key=str)
+    for group in groups:
+        label = normalized_lookup.get((*group, "label"))
+        correct = normalized_lookup.get((*group, "correct"))
+        shuffled = normalized_lookup.get((*group, "shuffled_s1"))
+        if label is None or correct is None or shuffled is None:
+            continue
+        descriptive = paired(mean_vectors((correct, shuffled)), label)
+        effects[(*group, "descriptive_marginal")] = descriptive
+        effects[(*group, "correspondence")] = paired(correct, shuffled)
+    return effects
+
+
+def _effect_rows(effect_lookup, identity):
+    """Return seed-level vectors matching a six-field effect identity."""
+    matrix, spec, ipc, visual, supervision, effect = identity
+    rows = {}
+    for key, values in effect_lookup.items():
+        if (key[0], key[1], key[2], key[3], key[4], key[7]) != identity:
+            continue
+        rows[(key[5], key[6])] = values
+    return rows
+
+
+def paired_effect_interaction(left, right, broadcast_right_training_seed=False):
+    """Pair effect vectors by generation/repeat and, where available, training seed."""
+    rows = []
+    for (training_seed, generation_seed), left_values in sorted(left.items(), key=str):
+        right_key = (training_seed, generation_seed)
+        if right_key not in right and broadcast_right_training_seed:
+            right_key = (None, generation_seed)
+        if right_key not in right:
+            continue
+        rows.append({
+            "training_seed": training_seed,
+            "generation_seed": generation_seed,
+            "values": paired(left_values, right[right_key]),
+        })
+    return rows
 
 
 def visual_label(row):
@@ -235,8 +279,105 @@ def main():
                     "mean_paired_difference": statistics.fmean(values), "paired_differences": values,
                 })
 
+    effect_lookup = effect_vectors(normalized_lookup)
+    formal_interactions = []
+    formal_interaction_cells = []
+
+    def record_interaction(analysis, contrast, left_identity, right_identity, rows):
+        if not rows:
+            return
+        metadata = {
+            "analysis": analysis,
+            "contrast": contrast,
+            "matrix_left": left_identity[0], "spec_left": left_identity[1],
+            "matrix_right": right_identity[0], "spec_right": right_identity[1],
+            "ipc": left_identity[2], "visual": left_identity[3],
+            "reference_visual": right_identity[3], "supervision_left": left_identity[4],
+            "supervision_right": right_identity[4], "effect": left_identity[5],
+        }
+        formal_interactions.append({**metadata, **summarize(rows)})
+        for row in rows:
+            formal_interaction_cells.append({
+                **metadata, "training_seed": row["training_seed"],
+                "generation_seed": row["generation_seed"],
+                "mean_paired_interaction": statistics.fmean(row["values"]),
+                "paired_interactions": row["values"],
+            })
+
+    # Strength changes in the two primitive prompt effects, always relative to 0.7.
+    effect_identities = sorted({
+        (key[0], key[1], key[2], key[3], key[4], key[7]) for key in effect_lookup
+    }, key=str)
+    for identity in effect_identities:
+        matrix, spec, ipc, visual, supervision, effect = identity
+        if not visual.startswith("strength_") or visual == "strength_0.7":
+            continue
+        reference = (matrix, spec, ipc, "strength_0.7", supervision, effect)
+        rows = paired_effect_interaction(
+            _effect_rows(effect_lookup, identity), _effect_rows(effect_lookup, reference)
+        )
+        record_interaction(
+            "strength_interaction", f"{visual}_minus_strength_0.7", identity, reference, rows
+        )
+
+    # Check whether the prompt effect itself changes with checkpoint supervision.
+    checkpoint_pairs = (
+        ("matched_ft", "frozen"),
+        ("matched_ft", "empty_ft"),
+        ("unpaired_ft", "label_ft"),
+        ("matched_ft", "unpaired_ft"),
+    )
+    checkpoint_bases = sorted({
+        (key[0], key[1], key[2], key[3], key[7]) for key in effect_lookup
+    }, key=str)
+    for matrix, spec, ipc, visual, effect in checkpoint_bases:
+        for left_supervision, right_supervision in checkpoint_pairs:
+            left = (matrix, spec, ipc, visual, left_supervision, effect)
+            right = (matrix, spec, ipc, visual, right_supervision, effect)
+            rows = paired_effect_interaction(
+                _effect_rows(effect_lookup, left), _effect_rows(effect_lookup, right),
+                broadcast_right_training_seed=right_supervision == "frozen",
+            )
+            record_interaction(
+                "checkpoint_prompt_interaction",
+                f"{left_supervision}_minus_{right_supervision}", left, right, rows,
+            )
+
+    # Cross-dataset generality at matched seeds/repeats: Woof (C) minus Nette (D).
+    dataset_effects = {}
+    for ipc in sorted({key[2] for key in effect_lookup}):
+        for visual in sorted({key[3] for key in effect_lookup}, key=_visual_order):
+            for effect in ("descriptive_marginal", "correspondence"):
+                woof = ("C", "woof", ipc, visual, "matched_ft", effect)
+                nette = ("D", "nette", ipc, visual, "matched_ft", effect)
+                rows = paired_effect_interaction(
+                    _effect_rows(effect_lookup, woof), _effect_rows(effect_lookup, nette)
+                )
+                if not rows:
+                    continue
+                dataset_effects[(ipc, visual, effect)] = {
+                    (row["training_seed"], row["generation_seed"]): row["values"] for row in rows
+                }
+                record_interaction(
+                    "dataset_interaction", "woof_minus_nette", woof, nette, rows
+                )
+
+    # Difference-in-differences: does the strength response itself differ by dataset?
+    for (ipc, visual, effect), current in sorted(dataset_effects.items(), key=str):
+        if visual == "strength_0.7" or not visual.startswith("strength_"):
+            continue
+        reference = dataset_effects.get((ipc, "strength_0.7", effect), {})
+        rows = paired_effect_interaction(current, reference)
+        left = ("C-D", "woof-nette", ipc, visual, "matched_ft", effect)
+        right = ("C-D", "woof-nette", ipc, "strength_0.7", "matched_ft", effect)
+        record_interaction(
+            "dataset_by_strength_interaction",
+            f"(woof-nette)_{visual}_minus_(woof-nette)_strength_0.7",
+            left, right, rows,
+        )
+
     payload = {
-        "format_version": 1,
+        "format_version": 2,
         "partial_summary": args.allow_incomplete,
         "filters": {"matrices": args.matrices, "specs": args.specs, "ipcs": args.ipcs},
         "coverage": {
@@ -257,9 +398,16 @@ def main():
             "prompt_marginal_robustness": "mean(shuffled shifts)-label, with shifts averaged before bootstrap",
             "correspondence_robustness": "correct-mean(shuffled shifts), with shifts averaged before bootstrap",
             "correct_utility": "correct-label",
+            "descriptive_marginal": "mean(correct, shuffle shift 1)-label, paired before averaging",
+            "correspondence": "correct-shuffle shift 1, paired before averaging",
         },
         "bootstrap_order": "training seed -> generation seed -> paired classifier repeat",
+        "formal_interaction_bootstrap_unit": (
+            "paired training seed -> paired generation seed -> paired classifier repeat; frozen controls "
+            "are broadcast across checkpoint training seeds but retain generation/repeat pairing"
+        ),
         "performance": performance, "contrasts": contrasts,
+        "formal_interactions": formal_interactions,
         "interpretation_boundary": (
             "Strength changes prototype corruption and effective denoising horizon. Pure-noise is a distinct "
             "text-to-image interface. Shuffle shifts are randomization realizations, not independent experimental units."
@@ -287,12 +435,29 @@ def main():
         "matrix", "spec", "ipc", "visual", "supervision", "training_seed", "generation_seed",
         "shuffle_shift", "contrast", "mean_paired_difference", "paired_differences",
     ))
+    formal_fields = (
+        "analysis", "contrast", "matrix_left", "spec_left", "matrix_right", "spec_right",
+        "ipc", "visual", "reference_visual", "supervision_left", "supervision_right", "effect",
+        "mean", "hierarchical_bootstrap_ci_lower", "hierarchical_bootstrap_ci_upper",
+        "training_generation_cells", "paired_classifier_observations",
+    )
+    write_csv(output / "formal_interactions.csv", formal_interactions, formal_fields)
+    write_csv(output / "formal_interaction_cells.csv", formal_interaction_cells, (
+        *formal_fields[:12], "training_seed", "generation_seed", "mean_paired_interaction",
+        "paired_interactions",
+    ))
     write_csv(output / "incomplete_cells.csv", incomplete, (
         "matrix", "spec", "ipc", "visual", "supervision", "training_seed", "generation_seed",
         "prompt", "shuffle_shift", "evaluation_log", "reason",
     ))
     plot(performance, contrasts, output / "conditioning_interface_matrix_summary.png")
-    print(json.dumps({"performance_rows": len(performance), "contrast_rows": len(contrasts)}, indent=2))
+    plot_formal_interactions(
+        formal_interactions, output / "conditioning_interface_formal_interactions.png"
+    )
+    print(json.dumps({
+        "performance_rows": len(performance), "contrast_rows": len(contrasts),
+        "formal_interaction_rows": len(formal_interactions),
+    }, indent=2))
 
 
 def plot(performance, contrasts, destination):
@@ -320,6 +485,53 @@ def plot(performance, contrasts, destination):
         if rows:
             axis.legend(fontsize=7)
     figure.suptitle("Prompt utility across conditioning interfaces")
+    figure.tight_layout()
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
+
+
+def plot_formal_interactions(rows, destination):
+    import matplotlib.pyplot as plt
+
+    figure, axes = plt.subplots(1, 3, figsize=(18, 5))
+    panels = (
+        ("strength_interaction", "Strength minus 0.7", None),
+        ("checkpoint_prompt_interaction", "Checkpoint x prompt", "woof"),
+        ("dataset_interaction", "Woof minus Nette", None),
+    )
+    for axis, (analysis, title, required_spec) in zip(axes, panels):
+        selected = [
+            row for row in rows
+            if row["analysis"] == analysis
+            and (required_spec is None or row["spec_left"] == required_spec)
+        ]
+        grouped = _group(
+            selected,
+            lambda row: (
+                row["effect"], row["ipc"], row["contrast"], row["supervision_left"]
+            ),
+        )
+        for key, group in grouped.items():
+            group = sorted(group, key=lambda row: _visual_order(row["visual"]))
+            x = [_visual_order(row["visual"]) for row in group]
+            y = [row["mean"] for row in group]
+            lower = [row["hierarchical_bootstrap_ci_lower"] for row in group]
+            upper = [row["hierarchical_bootstrap_ci_upper"] for row in group]
+            axis.errorbar(
+                x, y, yerr=(
+                    [center - bound for center, bound in zip(y, lower)],
+                    [bound - center for center, bound in zip(y, upper)],
+                ), marker="o", capsize=3,
+                label=f"{key[0]} IPC{key[1]} {key[2]}",
+            )
+        axis.axhline(0, color="black", linestyle="--", linewidth=1)
+        axis.set_title(title)
+        axis.set_xlabel("Visual strength")
+        axis.set_ylabel("Paired difference-in-differences")
+        axis.grid(alpha=0.25)
+        if selected:
+            axis.legend(fontsize=6)
+    figure.suptitle("Formal prompt-interface interaction tests")
     figure.tight_layout()
     figure.savefig(destination, dpi=180)
     plt.close(figure)

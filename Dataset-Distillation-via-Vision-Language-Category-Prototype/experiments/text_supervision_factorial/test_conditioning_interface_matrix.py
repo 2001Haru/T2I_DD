@@ -1,3 +1,4 @@
+import csv
 import json
 import subprocess
 import sys
@@ -153,6 +154,75 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
             names = {row["contrast"] for row in summary["contrasts"]}
             self.assertIn("correct_minus_shuffled_s1", names)
             self.assertNotIn("correct_minus_shuffled_mean_robustness", names)
+
+    def test_formal_prompt_interface_interactions_use_paired_repeat_vectors(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            index = []
+
+            def add_triplet(matrix, spec, ipc, strength, supervision, label, correct, shuffled):
+                for prompt, scores in (("label", label), ("correct", correct), ("shuffled", shuffled)):
+                    log = root / f"{matrix}_{ipc}_{strength}_{supervision}_{prompt}.log"
+                    log.write_text(f"Best, last acc:----{scores}\n", encoding="utf-8")
+                    index.append({
+                        "matrix": matrix, "spec": spec, "ipc": ipc, "visual_mode": "prototype",
+                        "strength": strength, "supervision": supervision,
+                        "training_seed": None if supervision == "frozen" else 0,
+                        "generation_seed": 0, "prompt": prompt,
+                        "shuffle_shift": 1 if prompt == "shuffled" else None,
+                        "evaluation_log": str(log), "source": "fixture",
+                    })
+
+            # Woof checkpoint interaction at IPC10:
+            # matched-frozen descriptive marginal = +6; correspondence = -8.
+            add_triplet("C", "woof", 10, 0.7, "frozen", [50, 50], [54, 54], [46, 46])
+            add_triplet("C", "woof", 10, 0.7, "matched_ft", [50, 50], [56, 56], [56, 56])
+
+            # Cross-dataset IPC50 interaction and its change from strength 0.7 to 0.8.
+            add_triplet("C", "woof", 50, 0.7, "matched_ft", [50, 50], [56, 56], [56, 56])
+            add_triplet("D", "nette", 50, 0.7, "matched_ft", [50, 50], [60, 60], [54, 54])
+            add_triplet("C", "woof", 50, 0.8, "matched_ft", [50, 50], [60, 60], [50, 50])
+            add_triplet("D", "nette", 50, 0.8, "matched_ft", [50, 50], [58, 58], [54, 54])
+
+            index_path = root / "index.json"
+            index_path.write_text(json.dumps(index), encoding="utf-8")
+            subprocess.run([
+                sys.executable, str(HERE / "summarize_conditioning_interface_matrix.py"),
+                "--evaluation-index", str(index_path), "--output-dir", str(root / "summary"),
+            ], check=True, capture_output=True, text=True)
+            with (root / "summary" / "formal_interactions.csv").open(encoding="utf-8") as handle:
+                rows = list(csv.DictReader(handle))
+
+            def value(analysis, contrast, effect, ipc, visual):
+                row = next(
+                    row for row in rows
+                    if row["analysis"] == analysis and row["contrast"] == contrast
+                    and row["effect"] == effect and int(row["ipc"]) == ipc
+                    and row["visual"] == visual
+                )
+                return float(row["mean"])
+
+            self.assertEqual(value(
+                "checkpoint_prompt_interaction", "matched_ft_minus_frozen",
+                "descriptive_marginal", 10, "strength_0.7",
+            ), 6.0)
+            self.assertEqual(value(
+                "checkpoint_prompt_interaction", "matched_ft_minus_frozen",
+                "correspondence", 10, "strength_0.7",
+            ), -8.0)
+            self.assertEqual(value(
+                "dataset_interaction", "woof_minus_nette",
+                "descriptive_marginal", 50, "strength_0.7",
+            ), -1.0)
+            self.assertEqual(value(
+                "dataset_interaction", "woof_minus_nette",
+                "correspondence", 50, "strength_0.7",
+            ), -6.0)
+            self.assertEqual(value(
+                "dataset_by_strength_interaction",
+                "(woof-nette)_strength_0.8_minus_(woof-nette)_strength_0.7",
+                "correspondence", 50, "strength_0.8",
+            ), 12.0)
 
 
 if __name__ == "__main__":
