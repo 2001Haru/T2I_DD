@@ -264,8 +264,11 @@ are read from reuse indexes instead of regenerated. `strength=1.0` remains an im
 `StableDiffusionPipeline` and is therefore a genuinely visual-free control.
 
 The scheduler is one persistent parent process. It runs the required ImageWoof fine-tunes across available GPUs,
-fills later phases with artifacts/generation, keeps at most two classifier evaluations active to limit host RAM, ignores SSH
-`SIGHUP`, archives failed logs, and retries indefinitely. Existing exact cells can be reused through one or more
+fills later phases with artifacts/generation, and by default runs up to four independent single-GPU classifier
+evaluations. Set `MAX_PARALLEL_EVALS=2` or `1` on a host with limited RAM; this runtime control does not alter
+the experiment manifest. Minimax keeps its historical evaluation worker configuration so resumed cells remain
+comparable with earlier results. The scheduler ignores SSH `SIGHUP`, archives failed
+logs, and retries indefinitely. Existing exact cells can be reused through one or more
 prior `evaluation_index.json` files. `MAX_WALLTIME_HOURS` stops launching new work at the deadline, waits for active
 tasks, writes `summary_partial`, and exits cleanly. It is a runtime limit and can change between resumes.
 

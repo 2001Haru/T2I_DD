@@ -70,7 +70,7 @@ def parse_args():
     parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--mixed-precision", choices=("no", "fp16", "bf16"), default="fp16")
-    parser.add_argument("--max-parallel-evals", type=int, default=2)
+    parser.add_argument("--max-parallel-evals", type=int, default=4)
     parser.add_argument("--retry-delay-seconds", type=int, default=120)
     parser.add_argument("--max-retries", type=int, default=0, help="0 retries forever")
     parser.add_argument(
@@ -486,6 +486,8 @@ def main():
     gpus = [item.strip() for item in args.gpus.split(",") if item.strip()]
     if not gpus:
         raise ValueError("At least one GPU is required")
+    if args.max_parallel_evals < 1:
+        raise ValueError("--max-parallel-evals must be at least 1")
     if args.train_batch_size * args.gradient_accumulation_steps != 32:
         raise ValueError("Each one-GPU Woof fine-tune must keep effective batch size 32")
     validate_subset(args.nette_data_root, "nette", args.nette_caption_file)
@@ -520,7 +522,9 @@ def main():
     running = {}
     print(
         f"A/B/C matrix: {len(index)} evaluation cells ({sum(row['source'] == 'reused' for row in index)} reused), "
-        f"{len(completed)}/{len(tasks)} tasks complete on GPUs {gpus}", flush=True,
+        f"{len(completed)}/{len(tasks)} tasks complete on GPUs {gpus}; "
+        f"max parallel evals={min(args.max_parallel_evals, len(gpus))}",
+        flush=True,
     )
     write_scheduler_state(run_root, tasks, completed, running)
     started_at = time.time()
