@@ -410,7 +410,9 @@ def main():
         "formal_interactions": formal_interactions,
         "interpretation_boundary": (
             "Strength changes prototype corruption and effective denoising horizon. Pure-noise is a distinct "
-            "text-to-image interface. Shuffle shifts are randomization realizations, not independent experimental units."
+            "text-to-image interface; without a visual source cluster, its Correct-Shuffled contrast measures "
+            "caption-allocation/noise-pairing sensitivity rather than cross-modal correspondence. Shuffle shifts "
+            "are randomization realizations, not independent experimental units."
         ),
     }
     (output / "conditioning_interface_matrix_summary.json").write_text(
@@ -504,30 +506,39 @@ def plot_formal_interactions(rows, destination):
             row for row in rows
             if row["analysis"] == analysis
             and (required_spec is None or row["spec_left"] == required_spec)
+            and (analysis != "strength_interaction" or row["supervision_left"] == "matched_ft")
         ]
-        grouped = _group(
-            selected,
-            lambda row: (
-                row["effect"], row["ipc"], row["contrast"], row["supervision_left"]
-            ),
-        )
+        if analysis == "strength_interaction":
+            key_fn = lambda row: (
+                row["matrix_left"], row["spec_left"], row["ipc"],
+                row["supervision_left"], row["effect"],
+            )
+        elif analysis == "checkpoint_prompt_interaction":
+            key_fn = lambda row: (row["ipc"], row["contrast"], row["effect"])
+        else:
+            key_fn = lambda row: (row["ipc"], row["effect"])
+        grouped = _group(selected, key_fn)
+        categories = sorted({row["visual"] for row in selected}, key=_visual_order)
+        positions = {category: index for index, category in enumerate(categories)}
         for key, group in grouped.items():
             group = sorted(group, key=lambda row: _visual_order(row["visual"]))
-            x = [_visual_order(row["visual"]) for row in group]
-            y = [row["mean"] for row in group]
-            lower = [row["hierarchical_bootstrap_ci_lower"] for row in group]
-            upper = [row["hierarchical_bootstrap_ci_upper"] for row in group]
-            axis.errorbar(
-                x, y, yerr=(
-                    [center - bound for center, bound in zip(y, lower)],
-                    [bound - center for center, bound in zip(y, upper)],
-                ), marker="o", capsize=3,
-                label=f"{key[0]} IPC{key[1]} {key[2]}",
-            )
+            strength_rows = [row for row in group if row["visual"] != "pure_noise"]
+            pure_rows = [row for row in group if row["visual"] == "pure_noise"]
+            label = " / ".join(str(value) for value in key)
+            color = None
+            if strength_rows:
+                artist = _errorbar_rows(axis, strength_rows, positions, label=label, marker="o")
+                color = artist[0].get_color()
+            if pure_rows:
+                _errorbar_rows(
+                    axis, pure_rows, positions, label=label if not strength_rows else None,
+                    marker="s", linestyle="none", color=color,
+                )
         axis.axhline(0, color="black", linestyle="--", linewidth=1)
         axis.set_title(title)
-        axis.set_xlabel("Visual strength")
+        axis.set_xlabel("Visual interface")
         axis.set_ylabel("Paired difference-in-differences")
+        axis.set_xticks(range(len(categories)), [_visual_tick(category) for category in categories])
         axis.grid(alpha=0.25)
         if selected:
             axis.legend(fontsize=6)
@@ -535,6 +546,26 @@ def plot_formal_interactions(rows, destination):
     figure.tight_layout()
     figure.savefig(destination, dpi=180)
     plt.close(figure)
+
+
+def _errorbar_rows(axis, rows, positions, **kwargs):
+    x = [positions[row["visual"]] for row in rows]
+    y = [row["mean"] for row in rows]
+    lower = [row["hierarchical_bootstrap_ci_lower"] for row in rows]
+    upper = [row["hierarchical_bootstrap_ci_upper"] for row in rows]
+    return axis.errorbar(
+        x, y,
+        yerr=(
+            [center - bound for center, bound in zip(y, lower)],
+            [bound - center for center, bound in zip(y, upper)],
+        ),
+        capsize=3,
+        **kwargs,
+    )
+
+
+def _visual_tick(value):
+    return "pure noise" if value == "pure_noise" else value.replace("strength_", "")
 
 
 def _group(rows, key_fn):
