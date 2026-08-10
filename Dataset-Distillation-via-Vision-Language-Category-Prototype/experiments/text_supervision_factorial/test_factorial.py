@@ -5,10 +5,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import torch
+
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from common import build_unpaired_donors, condition_matrix, shuffled_prompt_index  # noqa: E402
+from generate_factorial import schedule_matched_noise  # noqa: E402
 
 
 class AssignmentTests(unittest.TestCase):
@@ -27,6 +30,21 @@ class AssignmentTests(unittest.TestCase):
 
     def test_shuffle_shift(self):
         self.assertEqual([shuffled_prompt_index(index, 4, 1) for index in range(4)], [1, 2, 3, 0])
+
+    def test_schedule_matched_noise_is_deterministic_and_does_not_consume_diffusion_rng(self):
+        prototype = torch.zeros(4, 8, 8)
+        first = schedule_matched_noise(prototype, 17, "cpu", dtype=torch.float32)
+        second = schedule_matched_noise(prototype, 17, "cpu", dtype=torch.float32)
+        other = schedule_matched_noise(prototype, 18, "cpu", dtype=torch.float32)
+        self.assertTrue(torch.equal(first, second))
+        self.assertFalse(torch.equal(first, other))
+        self.assertEqual(tuple(first.shape), (1, 4, 8, 8))
+
+        expected = torch.rand(3, generator=torch.Generator().manual_seed(17))
+        diffusion_generator = torch.Generator().manual_seed(17)
+        schedule_matched_noise(prototype, 17, "cpu", dtype=torch.float32)
+        actual = torch.rand(3, generator=diffusion_generator)
+        self.assertTrue(torch.equal(expected, actual))
 
 
 class SummaryTests(unittest.TestCase):

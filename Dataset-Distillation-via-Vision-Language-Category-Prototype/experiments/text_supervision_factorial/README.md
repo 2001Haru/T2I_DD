@@ -344,3 +344,41 @@ The estimates and hierarchical bootstrap intervals are written to `summary/forma
 underlying repeat-paired values are retained in `summary/formal_interaction_cells.csv`, and the overview plot is
 `summary/conditioning_interface_formal_interactions.png`. Shuffle shifts are randomization realizations, not
 independent experimental units.
+## Schedule-matched visual-content control
+
+The schedule-matched follow-up separates prototype content from the shorter
+img2img denoising schedule. `schedule_matched_noise` uses the same img2img
+timesteps, strength, prompt, and diffusion RNG as `prototype`, but replaces the
+prototype latent with an independently seeded standard-normal latent. Because
+the scheduler mixes two independent standard normals, its noised latent keeps a
+standard-normal marginal while carrying no prototype content.
+
+The four-GPU runner evaluates ImageNette and ImageWoof at IPC50. It generates
+schedule-matched controls at strengths 0.7 and 0.9, completes the Matched-FT
+pure-noise endpoint, reuses existing prototype cells, and then computes DINO
+cluster retention from real-image-only VAE assignments:
+
+```bash
+GPU_IDS=0,1,2,3 \
+INTERFACE_RUN_ROOT=./conditioning_interface_matrix_runs/conditioning_interface_abc_v0 \
+bash experiments/text_supervision_factorial/run_schedule_matched_followup.sh
+```
+
+The runner is resume-safe. Set `MAX_WALLTIME_HOURS=13` to stop launching new
+tasks after 13 hours while allowing active jobs to finish. Set
+`RUN_RETENTION=false` to postpone the final VAE-assignment and DINO pass.
+
+Primary outputs are:
+
+- `evaluation_index.json`: reusable synthetic/evaluation cell inventory;
+- `summary/`: downstream prompt effects;
+- `visual_retention/visual_retention_per_cell.csv`: generated cluster Top-1,
+  source-centroid cosine, and target margin;
+- `visual_retention/retention_vs_prompt_utility.csv`: measured retention joined
+  to descriptive marginal utility and correspondence value;
+- `visual_retention/retention_utility_correlations.csv`: preregistered Spearman
+  associations with bootstrap intervals.
+
+`pure_noise` remains a full txt2img endpoint. It is deliberately distinct from
+`schedule_matched_noise`, which is the causal control for prototype content at
+an unchanged shortened denoising schedule.

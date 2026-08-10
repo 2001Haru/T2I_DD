@@ -37,7 +37,11 @@ def parse_args():
     parser.add_argument("--generation-seeds", type=int, nargs="+", default=(0, 1))
     parser.add_argument("--ipc", type=int, default=10)
     parser.add_argument("--strength", type=float, default=0.7)
-    parser.add_argument("--visual-mode", choices=("prototype", "pure_noise"), default="prototype")
+    parser.add_argument(
+        "--visual-mode",
+        choices=("prototype", "schedule_matched_noise", "pure_noise"),
+        default="prototype",
+    )
     parser.add_argument("--guidance-scale", type=float, default=10.0)
     parser.add_argument("--num-inference-steps", type=int, default=50)
     parser.add_argument("--negative-prompt", default="cartoon, anime, painting")
@@ -105,6 +109,17 @@ def prompt_for(synset, index, mode, dcs, shift):
     return str(dcs[synset][source]), source
 
 
+def schedule_matched_noise(prototype_data, image_seed, device, dtype=torch.float16):
+    """Return an independent N(0, I) latent without consuming diffusion RNG state."""
+    shape = tuple(torch.as_tensor(prototype_data).shape)
+    generator = torch.Generator(device="cpu").manual_seed(
+        (int(image_seed) + 2_000_000_011) % (2**63 - 1)
+    )
+    return torch.randn(shape, generator=generator, dtype=torch.float32).to(
+        device=device, dtype=dtype
+    ).unsqueeze(0)
+
+
 def generate(pipe, prototypes, dcs, supervision, prompt_mode, generation_seed, output_dir, args):
     records = []
     completed = 0
@@ -138,10 +153,16 @@ def generate(pipe, prototypes, dcs, supervision, prompt_mode, generation_seed, o
                     "num_inference_steps": args.num_inference_steps,
                     "generator": generator,
                 }
-                if args.visual_mode == "prototype":
-                    call_args["image"] = torch.tensor(
-                        prototype_data, dtype=torch.float16, device=args.device
-                    ).unsqueeze(0)
+                if args.visual_mode in {"prototype", "schedule_matched_noise"}:
+                    if args.visual_mode == "prototype":
+                        visual_latent = torch.tensor(
+                            prototype_data, dtype=torch.float16, device=args.device
+                        ).unsqueeze(0)
+                    else:
+                        visual_latent = schedule_matched_noise(
+                            prototype_data, image_seed, args.device
+                        )
+                    call_args["image"] = visual_latent
                     call_args["strength"] = args.strength
                 else:
                     call_args["height"] = args.size
@@ -167,7 +188,11 @@ def main():
 
     for supervision in args.supervisions:
         checkpoint = models[supervision]
-        pipeline_class = StableDiffusionImg2ImgPipeline if args.visual_mode == "prototype" else StableDiffusionPipeline
+        pipeline_class = (
+            StableDiffusionImg2ImgPipeline
+            if args.visual_mode in {"prototype", "schedule_matched_noise"}
+            else StableDiffusionPipeline
+        )
         pipe = pipeline_class.from_pretrained(
             checkpoint, torch_dtype=torch.float16, safety_checker=None, requires_safety_checker=False
         ).to(args.device)
@@ -188,8 +213,15 @@ def main():
                     "dcs_sha256": sha256_file(dcs_path),
                     "generation_seed": generation_seed,
                     "ipc": args.ipc,
-                    "strength": args.strength if args.visual_mode == "prototype" else None,
+                    "strength": args.strength if args.visual_mode != "pure_noise" else None,
                     "visual_mode": args.visual_mode,
+                    "schedule_matched_noise_definition": (
+                        "independent standard-normal x0 latent plus the ordinary img2img "
+                        "forward noise at the requested strength; diffusion RNG is paired "
+                        "with prototype mode"
+                        if args.visual_mode == "schedule_matched_noise"
+                        else None
+                    ),
                     "guidance_scale": args.guidance_scale,
                     "num_inference_steps": args.num_inference_steps,
                     "negative_prompt": args.negative_prompt,
