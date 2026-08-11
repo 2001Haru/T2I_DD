@@ -128,8 +128,8 @@ def nette_artifacts(args, ipc):
 def nette_model(args, supervision, training_seed):
     if supervision == "frozen":
         return Path(args.base_model).resolve()
-    if supervision == "matched_ft" and training_seed == 0:
-        return Path(args.base_run_root).resolve() / "models" / "matched_ft"
+    if training_seed == 0 and supervision in {"label_ft", "unpaired_ft", "matched_ft"}:
+        return Path(args.base_run_root).resolve() / "models" / supervision
     return Path(args.causal_run_root).resolve() / "models" / f"train_seed_{training_seed}" / supervision
 
 
