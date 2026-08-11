@@ -23,6 +23,7 @@ BASE_RUN_ROOT="${BASE_RUN_ROOT:-$REPO_ROOT/text_supervision_factorial_runs/text_
 CAUSAL_RUN_ROOT="${CAUSAL_RUN_ROOT:-$REPO_ROOT/text_supervision_factorial_runs/text_supervision_causal_ladder_v0}"
 GENERALITY_RUN_ROOT="${GENERALITY_RUN_ROOT:-$REPO_ROOT/text_supervision_generality_runs/text_supervision_generality_v0}"
 INTERFACE_RUN_ROOT="${INTERFACE_RUN_ROOT:-$REPO_ROOT/conditioning_interface_matrix_runs/conditioning_interface_abc_v0}"
+WOOF_MODEL_ROOT="${WOOF_MODEL_ROOT:-$REPO_ROOT/conditioning_interface_matrix_runs/conditioning_interface_generality_v0}"
 RUN_ID="${RUN_ID:-schedule_matched_checkpoint_v1}"
 RUN_ROOT="${RUN_ROOT:-$REPO_ROOT/schedule_matched_followup_runs/$RUN_ID}"
 PRIOR_FOLLOWUP_RUN_ROOT="${PRIOR_FOLLOWUP_RUN_ROOT:-$REPO_ROOT/schedule_matched_followup_runs/schedule_matched_followup_v0}"
@@ -47,7 +48,8 @@ python "$EXPERIMENT_DIR/run_schedule_matched_followup.py" \
   --base-model "$BASE_MODEL" --diffusers-src "$DIFFUSERS_SRC" \
   --base-run-root "$BASE_RUN_ROOT" \
   --causal-run-root "$CAUSAL_RUN_ROOT" --generality-run-root "$GENERALITY_RUN_ROOT" \
-  --interface-run-root "$INTERFACE_RUN_ROOT" --run-root "$RUN_ROOT" \
+  --interface-run-root "$INTERFACE_RUN_ROOT" --woof-model-root "$WOOF_MODEL_ROOT" \
+  --run-root "$RUN_ROOT" \
   --supervisions ${SUPERVISIONS:-label_ft matched_ft} \
   --gpus "$GPU_IDS" --classifier-repeats "${CLASSIFIER_REPEATS:-2}" \
   --max-parallel-evals "${MAX_PARALLEL_EVALS:-4}" \

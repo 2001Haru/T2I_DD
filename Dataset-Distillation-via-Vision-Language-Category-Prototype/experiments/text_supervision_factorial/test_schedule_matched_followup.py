@@ -44,6 +44,7 @@ class ScheduleMatchedFollowupTests(unittest.TestCase):
                 nette_data_root=str(root / "nette"), woof_data_root=str(root / "woof"),
                 base_model=str(model), base_run_root=str(base), causal_run_root=str(causal),
                 generality_run_root=str(generality), interface_run_root=str(interface),
+                woof_model_root=str(interface),
                 run_root=str(root / "run"), specs=("nette", "woof"),
                 training_seeds=(0, 1), generation_seeds=(0, 1),
                 supervisions=("label_ft", "matched_ft"),

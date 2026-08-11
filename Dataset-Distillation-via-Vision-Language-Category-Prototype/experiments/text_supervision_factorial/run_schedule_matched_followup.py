@@ -38,6 +38,10 @@ def parse_args():
     parser.add_argument("--causal-run-root", required=True)
     parser.add_argument("--generality-run-root", required=True)
     parser.add_argument("--interface-run-root", required=True)
+    parser.add_argument(
+        "--woof-model-root", default="",
+        help="Run root containing models/woof/train_seed_*/; defaults to interface-run-root with a generality-run sibling fallback",
+    )
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--reuse-index", action="append", default=[])
     parser.add_argument("--specs", nargs="+", choices=("nette", "woof"), default=("nette", "woof"))
@@ -69,10 +73,23 @@ def woof_artifacts(args):
 def model_for(args, spec, supervision, training_seed):
     if spec == "nette":
         return nette_model(args, supervision, training_seed)
-    return (
-        Path(args.interface_run_root).resolve()
-        / "models" / "woof" / f"train_seed_{training_seed}" / supervision
+    interface_root = Path(args.interface_run_root).resolve()
+    roots = (
+        [Path(args.woof_model_root).resolve()]
+        if args.woof_model_root
+        else [
+            interface_root,
+            interface_root.parent / "conditioning_interface_generality_v0",
+        ]
     )
+    candidates = [
+        root / "models" / "woof" / f"train_seed_{training_seed}" / supervision
+        for root in roots
+    ]
+    for candidate in candidates:
+        if complete_model(candidate)():
+            return candidate
+    return candidates[0]
 
 
 def add_reference_rows(index, reuse, spec, training_seed, generation_seed):
@@ -146,6 +163,9 @@ def write_manifest(args, index):
         "gpus": args.gpus,
         "base_model": str(Path(args.base_model).resolve()),
         "interface_run_root": str(Path(args.interface_run_root).resolve()),
+        "woof_model_root": (
+            str(Path(args.woof_model_root).resolve()) if args.woof_model_root else "auto"
+        ),
         "reuse_indexes": [str(Path(path).resolve()) for path in args.reuse_index],
     }
     path = root / "run_manifest.json"

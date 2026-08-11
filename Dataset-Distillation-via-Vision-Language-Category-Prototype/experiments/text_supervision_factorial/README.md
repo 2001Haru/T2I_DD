@@ -362,8 +362,14 @@ real-image-only VAE assignments:
 ```bash
 GPU_IDS=0,1,2,3 \
 INTERFACE_RUN_ROOT=./conditioning_interface_matrix_runs/conditioning_interface_abc_v0 \
+WOOF_MODEL_ROOT=./conditioning_interface_matrix_runs/conditioning_interface_generality_v0 \
 bash experiments/text_supervision_factorial/run_schedule_matched_followup.sh
 ```
+
+`INTERFACE_RUN_ROOT` supplies Woof artifacts and historical indexes, while
+`WOOF_MODEL_ROOT` supplies `models/woof/train_seed_*/{label_ft,matched_ft}`.
+They are intentionally separate because the completed Woof checkpoints live
+under `conditioning_interface_generality_v0`, not the earlier `abc_v0` run.
 
 After completing the original Matched-FT run, the default new run ID
 `schedule_matched_checkpoint_v1` automatically reuses
