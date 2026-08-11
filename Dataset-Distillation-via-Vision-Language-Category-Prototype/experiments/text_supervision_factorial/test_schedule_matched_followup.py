@@ -33,24 +33,33 @@ class ScheduleMatchedFollowupTests(unittest.TestCase):
                 artifact_root.mkdir(parents=True)
                 (artifact_root / f"{name}-ipc50-0.7-30-kmexpand1.json").write_text("{}", encoding="utf-8")
                 (artifact_root / "dcs.json").write_text("{}", encoding="utf-8")
-            write_model(base / "models" / "matched_ft")
-            write_model(causal / "models" / "train_seed_1" / "matched_ft")
+            for supervision in ("label_ft", "matched_ft"):
+                write_model(base / "models" / supervision)
+                for seed in (0, 1):
+                    write_model(causal / "models" / f"train_seed_{seed}" / supervision)
             for seed in (0, 1):
-                write_model(interface / "models" / "woof" / f"train_seed_{seed}" / "matched_ft")
+                for supervision in ("label_ft", "matched_ft"):
+                    write_model(interface / "models" / "woof" / f"train_seed_{seed}" / supervision)
             args = Namespace(
                 nette_data_root=str(root / "nette"), woof_data_root=str(root / "woof"),
                 base_model=str(model), base_run_root=str(base), causal_run_root=str(causal),
                 generality_run_root=str(generality), interface_run_root=str(interface),
                 run_root=str(root / "run"), specs=("nette", "woof"),
                 training_seeds=(0, 1), generation_seeds=(0, 1),
+                supervisions=("label_ft", "matched_ft"),
                 guidance_scale=10.0, num_inference_steps=50, classifier_repeats=2,
                 classifier_seed=0, diffusers_src="",
             )
             tasks, index = build_tasks(args, {})
-            self.assertEqual(len(index), 96)
+            self.assertEqual(len(index), 192)
             self.assertEqual({row["visual_mode"] for row in index}, {"schedule_matched_noise", "pure_noise"})
-            self.assertEqual(sum(row["visual_mode"] == "schedule_matched_noise" for row in index), 48)
-            self.assertEqual(sum(row["visual_mode"] == "pure_noise" for row in index), 48)
+            self.assertEqual(sum(row["visual_mode"] == "schedule_matched_noise" for row in index), 96)
+            self.assertEqual(sum(row["visual_mode"] == "pure_noise" for row in index), 96)
+            self.assertEqual(len(tasks), 288)
+
+            args.supervisions = ("label_ft",)
+            tasks, index = build_tasks(args, {})
+            self.assertEqual(len(index), 96)
             self.assertEqual(len(tasks), 144)
 
 

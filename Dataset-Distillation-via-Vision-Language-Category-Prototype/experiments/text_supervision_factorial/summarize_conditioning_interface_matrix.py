@@ -324,6 +324,7 @@ def main():
     checkpoint_pairs = (
         ("matched_ft", "frozen"),
         ("matched_ft", "empty_ft"),
+        ("matched_ft", "label_ft"),
         ("unpaired_ft", "label_ft"),
         ("matched_ft", "unpaired_ft"),
     )
@@ -343,33 +344,57 @@ def main():
                 f"{left_supervision}_minus_{right_supervision}", left, right, rows,
             )
 
-    # Cross-dataset generality at matched seeds/repeats: Woof (C) minus Nette (D).
+    # Cross-dataset generality at matched seeds/repeats. New matrices use the same
+    # matrix label for both datasets; retain the historical C-Woof/D-Nette pairing.
     dataset_effects = {}
-    for ipc in sorted({key[2] for key in effect_lookup}):
-        for visual in sorted({key[3] for key in effect_lookup}, key=_visual_order):
-            for effect in ("descriptive_marginal", "correspondence"):
-                woof = ("C", "woof", ipc, visual, "matched_ft", effect)
-                nette = ("D", "nette", ipc, visual, "matched_ft", effect)
-                rows = paired_effect_interaction(
-                    _effect_rows(effect_lookup, woof), _effect_rows(effect_lookup, nette)
-                )
-                if not rows:
-                    continue
-                dataset_effects[(ipc, visual, effect)] = {
-                    (row["training_seed"], row["generation_seed"]): row["values"] for row in rows
-                }
-                record_interaction(
-                    "dataset_interaction", "woof_minus_nette", woof, nette, rows
-                )
+    identities = {
+        (key[0], key[1], key[2], key[3], key[4], key[7]) for key in effect_lookup
+    }
+    matrices = sorted({identity[0] for identity in identities})
+    dataset_matrix_pairs = [
+        (matrix, matrix) for matrix in matrices
+        if any(identity[0] == matrix and identity[1] == "woof" for identity in identities)
+        and any(identity[0] == matrix and identity[1] == "nette" for identity in identities)
+    ]
+    if any(identity[0] == "C" and identity[1] == "woof" for identity in identities) and any(
+        identity[0] == "D" and identity[1] == "nette" for identity in identities
+    ):
+        dataset_matrix_pairs.append(("C", "D"))
+    for woof_matrix, nette_matrix in dataset_matrix_pairs:
+        bases = sorted({
+            (identity[2], identity[3], identity[4], identity[5])
+            for identity in identities
+            if (identity[0], identity[1]) in {
+                (woof_matrix, "woof"), (nette_matrix, "nette")
+            }
+        }, key=str)
+        for ipc, visual, supervision, effect in bases:
+            woof = (woof_matrix, "woof", ipc, visual, supervision, effect)
+            nette = (nette_matrix, "nette", ipc, visual, supervision, effect)
+            rows = paired_effect_interaction(
+                _effect_rows(effect_lookup, woof), _effect_rows(effect_lookup, nette)
+            )
+            if not rows:
+                continue
+            dataset_effects[(woof_matrix, nette_matrix, ipc, visual, supervision, effect)] = {
+                (row["training_seed"], row["generation_seed"]): row["values"] for row in rows
+            }
+            record_interaction(
+                "dataset_interaction", "woof_minus_nette", woof, nette, rows
+            )
 
     # Difference-in-differences: does the strength response itself differ by dataset?
-    for (ipc, visual, effect), current in sorted(dataset_effects.items(), key=str):
+    for key, current in sorted(dataset_effects.items(), key=str):
+        woof_matrix, nette_matrix, ipc, visual, supervision, effect = key
         if visual == "strength_0.7" or not visual.startswith("strength_"):
             continue
-        reference = dataset_effects.get((ipc, "strength_0.7", effect), {})
+        reference = dataset_effects.get((
+            woof_matrix, nette_matrix, ipc, "strength_0.7", supervision, effect
+        ), {})
         rows = paired_effect_interaction(current, reference)
-        left = ("C-D", "woof-nette", ipc, visual, "matched_ft", effect)
-        right = ("C-D", "woof-nette", ipc, "strength_0.7", "matched_ft", effect)
+        matrix_label = f"{woof_matrix}-{nette_matrix}"
+        left = (matrix_label, "woof-nette", ipc, visual, supervision, effect)
+        right = (matrix_label, "woof-nette", ipc, "strength_0.7", supervision, effect)
         record_interaction(
             "dataset_by_strength_interaction",
             f"(woof-nette)_{visual}_minus_(woof-nette)_strength_0.7",
@@ -465,19 +490,26 @@ def main():
 def plot(performance, contrasts, destination):
     import matplotlib.pyplot as plt
 
-    figure, axes = plt.subplots(1, 3, figsize=(18, 5))
-    for axis, matrix in zip(axes, ("A", "B", "C")):
+    matrices = sorted({row["matrix"] for row in contrasts})
+    figure, axes = plt.subplots(
+        1, len(matrices), figsize=(max(6, 6 * len(matrices)), 5), squeeze=False
+    )
+    for axis, matrix in zip(axes[0], matrices):
         rows = [
             row for row in contrasts
             if row["matrix"] == matrix and row["contrast"] in {
                 "correct_minus_label", "shuffled_s1_minus_label", "correct_minus_shuffled_s1"
             }
         ]
-        for (ipc, contrast), selected in _group(rows, lambda row: (row["ipc"], row["contrast"])).items():
+        for key, selected in _group(
+            rows, lambda row: (
+                row["spec"], row["supervision"], row["ipc"], row["contrast"]
+            )
+        ).items():
             selected = sorted(selected, key=lambda row: _visual_order(row["visual"]))
             axis.plot(
                 [_visual_order(row["visual"]) for row in selected], [row["mean"] for row in selected],
-                marker="o", label=f"IPC{ipc} {contrast}",
+                marker="o", label=f"{key[0]} {key[1]} IPC{key[2]} {key[3]}",
             )
         axis.axhline(0, color="black", linestyle="--", linewidth=1)
         axis.set_title(f"Matrix {matrix}")
@@ -498,7 +530,7 @@ def plot_formal_interactions(rows, destination):
     figure, axes = plt.subplots(1, 3, figsize=(18, 5))
     panels = (
         ("strength_interaction", "Strength minus 0.7", None),
-        ("checkpoint_prompt_interaction", "Checkpoint x prompt", "woof"),
+        ("checkpoint_prompt_interaction", "Checkpoint x prompt", None),
         ("dataset_interaction", "Woof minus Nette", None),
     )
     for axis, (analysis, title, required_spec) in zip(axes, panels):
@@ -514,9 +546,14 @@ def plot_formal_interactions(rows, destination):
                 row["supervision_left"], row["effect"],
             )
         elif analysis == "checkpoint_prompt_interaction":
-            key_fn = lambda row: (row["ipc"], row["contrast"], row["effect"])
+            key_fn = lambda row: (
+                row["matrix_left"], row["spec_left"], row["ipc"],
+                row["contrast"], row["effect"],
+            )
         else:
-            key_fn = lambda row: (row["ipc"], row["effect"])
+            key_fn = lambda row: (
+                row["matrix_left"], row["supervision_left"], row["ipc"], row["effect"]
+            )
         grouped = _group(selected, key_fn)
         categories = sorted({row["visual"] for row in selected}, key=_visual_order)
         positions = {category: index for index, category in enumerate(categories)}

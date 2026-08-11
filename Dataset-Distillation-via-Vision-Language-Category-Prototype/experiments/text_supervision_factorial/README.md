@@ -353,16 +353,26 @@ prototype latent with an independently seeded standard-normal latent. Because
 the scheduler mixes two independent standard normals, its noised latent keeps a
 standard-normal marginal while carrying no prototype content.
 
-The four-GPU runner evaluates ImageNette and ImageWoof at IPC50. It generates
-schedule-matched controls at strengths 0.7 and 0.9, completes the Matched-FT
-pure-noise endpoint, reuses existing prototype cells, and then computes DINO
-cluster retention from real-image-only VAE assignments:
+The four-GPU runner evaluates ImageNette and ImageWoof at IPC50 for Label-FT
+and Matched-FT. It generates schedule-matched controls at strengths 0.7 and
+0.9, completes the pure-noise endpoint, reuses existing Matched-FT cells and
+prototype references, and then computes DINO cluster retention from
+real-image-only VAE assignments:
 
 ```bash
 GPU_IDS=0,1,2,3 \
 INTERFACE_RUN_ROOT=./conditioning_interface_matrix_runs/conditioning_interface_abc_v0 \
 bash experiments/text_supervision_factorial/run_schedule_matched_followup.sh
 ```
+
+After completing the original Matched-FT run, the default new run ID
+`schedule_matched_checkpoint_v1` automatically reuses
+`schedule_matched_followup_v0/evaluation_index.json` and only schedules the
+missing Label-FT cells. Set `SUPERVISIONS=label_ft` to make that incremental
+intent explicit. The summary now derives matrix panels dynamically, so E/F/R
+runs no longer produce an empty legacy A/B/C plot. It also reports direct
+`Matched-FT - Label-FT` prompt interactions and same-matrix Woof-Nette
+interactions.
 
 The runner is resume-safe. Set `MAX_WALLTIME_HOURS=13` to stop launching new
 tasks after 13 hours while allowing active jobs to finish. Set

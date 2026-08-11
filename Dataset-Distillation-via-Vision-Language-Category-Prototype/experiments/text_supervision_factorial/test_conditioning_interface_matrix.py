@@ -162,7 +162,7 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
 
             def add_triplet(matrix, spec, ipc, strength, supervision, label, correct, shuffled):
                 for prompt, scores in (("label", label), ("correct", correct), ("shuffled", shuffled)):
-                    log = root / f"{matrix}_{ipc}_{strength}_{supervision}_{prompt}.log"
+                    log = root / f"{matrix}_{spec}_{ipc}_{strength}_{supervision}_{prompt}.log"
                     log.write_text(f"Best, last acc:----{scores}\n", encoding="utf-8")
                     index.append({
                         "matrix": matrix, "spec": spec, "ipc": ipc, "visual_mode": "prototype",
@@ -184,6 +184,13 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
             add_triplet("C", "woof", 50, 0.8, "matched_ft", [50, 50], [60, 60], [50, 50])
             add_triplet("D", "nette", 50, 0.8, "matched_ft", [50, 50], [58, 58], [54, 54])
 
+            # New matrices carry both datasets under one matrix name and compare
+            # Label-FT directly with Matched-FT.
+            add_triplet("E", "woof", 50, 0.7, "label_ft", [50, 50], [52, 52], [54, 54])
+            add_triplet("E", "woof", 50, 0.7, "matched_ft", [50, 50], [58, 58], [56, 56])
+            add_triplet("E", "nette", 50, 0.7, "label_ft", [50, 50], [56, 56], [54, 54])
+            add_triplet("E", "nette", 50, 0.7, "matched_ft", [50, 50], [60, 60], [56, 56])
+
             index_path = root / "index.json"
             index_path.write_text(json.dumps(index), encoding="utf-8")
             subprocess.run([
@@ -193,12 +200,14 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
             with (root / "summary" / "formal_interactions.csv").open(encoding="utf-8") as handle:
                 rows = list(csv.DictReader(handle))
 
-            def value(analysis, contrast, effect, ipc, visual):
+            def value(analysis, contrast, effect, ipc, visual, matrix_left=None, spec_left=None):
                 row = next(
                     row for row in rows
                     if row["analysis"] == analysis and row["contrast"] == contrast
                     and row["effect"] == effect and int(row["ipc"]) == ipc
                     and row["visual"] == visual
+                    and (matrix_left is None or row["matrix_left"] == matrix_left)
+                    and (spec_left is None or row["spec_left"] == spec_left)
                 )
                 return float(row["mean"])
 
@@ -212,17 +221,31 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
             ), -8.0)
             self.assertEqual(value(
                 "dataset_interaction", "woof_minus_nette",
-                "descriptive_marginal", 50, "strength_0.7",
+                "descriptive_marginal", 50, "strength_0.7", "C",
             ), -1.0)
             self.assertEqual(value(
                 "dataset_interaction", "woof_minus_nette",
-                "correspondence", 50, "strength_0.7",
+                "correspondence", 50, "strength_0.7", "C",
             ), -6.0)
             self.assertEqual(value(
                 "dataset_by_strength_interaction",
                 "(woof-nette)_strength_0.8_minus_(woof-nette)_strength_0.7",
                 "correspondence", 50, "strength_0.8",
             ), 12.0)
+            self.assertEqual(value(
+                "checkpoint_prompt_interaction", "matched_ft_minus_label_ft",
+                "correspondence", 50, "strength_0.7", "E", "woof",
+            ), 4.0)
+            generalized = [
+                row for row in rows
+                if row["analysis"] == "dataset_interaction"
+                and row["matrix_left"] == "E" and row["matrix_right"] == "E"
+            ]
+            self.assertTrue(generalized)
+            self.assertGreater(
+                (root / "summary" / "conditioning_interface_matrix_summary.png").stat().st_size,
+                10_000,
+            )
 
 
 if __name__ == "__main__":

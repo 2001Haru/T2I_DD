@@ -43,6 +43,10 @@ def parse_args():
     parser.add_argument("--specs", nargs="+", choices=("nette", "woof"), default=("nette", "woof"))
     parser.add_argument("--training-seeds", type=int, nargs="+", default=(0, 1))
     parser.add_argument("--generation-seeds", type=int, nargs="+", default=(0, 1))
+    parser.add_argument(
+        "--supervisions", nargs="+", choices=("label_ft", "matched_ft"),
+        default=("label_ft", "matched_ft"),
+    )
     parser.add_argument("--gpus", default="0,1,2,3")
     parser.add_argument("--classifier-repeats", type=int, default=2)
     parser.add_argument("--classifier-seed", type=int, default=0)
@@ -62,12 +66,12 @@ def woof_artifacts(args):
     return root / "woof-ipc50-0.7-30-kmexpand1.json", root / "dcs.json"
 
 
-def model_for(args, spec, training_seed):
+def model_for(args, spec, supervision, training_seed):
     if spec == "nette":
-        return nette_model(args, "matched_ft", training_seed)
+        return nette_model(args, supervision, training_seed)
     return (
         Path(args.interface_run_root).resolve()
-        / "models" / "woof" / f"train_seed_{training_seed}" / "matched_ft"
+        / "models" / "woof" / f"train_seed_{training_seed}" / supervision
     )
 
 
@@ -101,25 +105,27 @@ def build_tasks(args, reuse):
         for path in (prototype, dcs):
             if not path.is_file():
                 raise FileNotFoundError(path)
-        for training_seed in args.training_seeds:
-            model = model_for(args, spec, training_seed)
-            if not complete_model(model)():
-                raise RuntimeError(f"Missing Matched-FT checkpoint: {model}")
-            for generation_seed in args.generation_seeds:
-                add_reference_rows(index, reuse, spec, training_seed, generation_seed)
-                for strength in NEW_STRENGTHS:
+        for supervision in args.supervisions:
+            for training_seed in args.training_seeds:
+                model = model_for(args, spec, supervision, training_seed)
+                if not complete_model(model)():
+                    raise RuntimeError(f"Missing {supervision} checkpoint: {model}")
+                for generation_seed in args.generation_seeds:
+                    if supervision == "matched_ft":
+                        add_reference_rows(index, reuse, spec, training_seed, generation_seed)
+                    for strength in NEW_STRENGTHS:
+                        add_prompt_grid(
+                            tasks, index, args, reuse, "E", spec, roots[spec], 50,
+                            prototype, dcs, model, supervision, training_seed,
+                            generation_seed, strength, "schedule_matched_noise",
+                            stage=1, phase="schedule_matched_content_control",
+                        )
                     add_prompt_grid(
-                        tasks, index, args, reuse, "E", spec, roots[spec], 50,
-                        prototype, dcs, model, "matched_ft", training_seed,
-                        generation_seed, strength, "schedule_matched_noise",
-                        stage=1, phase="schedule_matched_content_control",
+                        tasks, index, args, reuse, "F", spec, roots[spec], 50,
+                        prototype, dcs, model, supervision, training_seed,
+                        generation_seed, None, "pure_noise", extra_shifts=(2, 4, 7),
+                        stage=2, phase="pure_noise_ipc50_endpoint",
                     )
-                add_prompt_grid(
-                    tasks, index, args, reuse, "F", spec, roots[spec], 50,
-                    prototype, dcs, model, "matched_ft", training_seed,
-                    generation_seed, None, "pure_noise", extra_shifts=(2, 4, 7),
-                    stage=2, phase="pure_noise_ipc50_endpoint",
-                )
     return tasks, index
 
 
@@ -135,6 +141,7 @@ def write_manifest(args, index):
         "pure_noise_shuffle_shifts": [1, 2, 4, 7],
         "training_seeds": list(args.training_seeds),
         "generation_seeds": list(args.generation_seeds),
+        "supervisions": list(args.supervisions),
         "classifier_repeats": args.classifier_repeats,
         "gpus": args.gpus,
         "base_model": str(Path(args.base_model).resolve()),
