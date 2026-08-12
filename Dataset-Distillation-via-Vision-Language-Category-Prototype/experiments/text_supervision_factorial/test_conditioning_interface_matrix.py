@@ -187,6 +187,7 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
             # New matrices carry both datasets under one matrix name and compare
             # Label-FT directly with Matched-FT.
             add_triplet("E", "woof", 50, 0.7, "label_ft", [50, 50], [52, 52], [54, 54])
+            add_triplet("E", "woof", 50, 0.7, "unpaired_ft", [50, 50], [57, 57], [55, 55])
             add_triplet("E", "woof", 50, 0.7, "matched_ft", [50, 50], [58, 58], [56, 56])
             add_triplet("E", "nette", 50, 0.7, "label_ft", [50, 50], [56, 56], [54, 54])
             add_triplet("E", "nette", 50, 0.7, "matched_ft", [50, 50], [60, 60], [56, 56])
@@ -236,6 +237,22 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
                 "checkpoint_prompt_interaction", "matched_ft_minus_label_ft",
                 "correspondence", 50, "strength_0.7", "E", "woof",
             ), 4.0)
+            self.assertEqual(value(
+                "checkpoint_descriptive_average", "unpaired_ft_minus_label_ft",
+                "descriptive_average", 50, "strength_0.7", "E", "woof",
+            ), 3.0)
+            self.assertEqual(value(
+                "checkpoint_descriptive_average", "matched_ft_minus_unpaired_ft",
+                "descriptive_average", 50, "strength_0.7", "E", "woof",
+            ), 1.0)
+            self.assertEqual(value(
+                "checkpoint_correspondence_interaction", "unpaired_ft_minus_label_ft",
+                "correspondence", 50, "strength_0.7", "E", "woof",
+            ), 4.0)
+            self.assertEqual(value(
+                "checkpoint_correspondence_interaction", "matched_ft_minus_unpaired_ft",
+                "correspondence", 50, "strength_0.7", "E", "woof",
+            ), 0.0)
             generalized = [
                 row for row in rows
                 if row["analysis"] == "dataset_interaction"
@@ -244,6 +261,10 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
             self.assertTrue(generalized)
             self.assertGreater(
                 (root / "summary" / "conditioning_interface_matrix_summary.png").stat().st_size,
+                10_000,
+            )
+            self.assertGreater(
+                (root / "summary" / "checkpoint_statistical_boundaries.png").stat().st_size,
                 10_000,
             )
 

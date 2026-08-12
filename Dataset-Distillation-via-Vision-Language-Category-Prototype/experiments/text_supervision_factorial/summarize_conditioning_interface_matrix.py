@@ -83,6 +83,20 @@ def effect_vectors(normalized_lookup):
     return effects
 
 
+def checkpoint_boundary_vectors(normalized_lookup):
+    """Build absolute descriptive performance and correspondence vectors."""
+    effects = {}
+    groups = sorted({key[:7] for key in normalized_lookup}, key=str)
+    for group in groups:
+        correct = normalized_lookup.get((*group, "correct"))
+        shuffled = normalized_lookup.get((*group, "shuffled_s1"))
+        if correct is None or shuffled is None:
+            continue
+        effects[(*group, "descriptive_average")] = mean_vectors((correct, shuffled))
+        effects[(*group, "correspondence")] = paired(correct, shuffled)
+    return effects
+
+
 def _effect_rows(effect_lookup, identity):
     """Return seed-level vectors matching a six-field effect identity."""
     matrix, spec, ipc, visual, supervision, effect = identity
@@ -280,6 +294,7 @@ def main():
                 })
 
     effect_lookup = effect_vectors(normalized_lookup)
+    checkpoint_boundary_lookup = checkpoint_boundary_vectors(normalized_lookup)
     formal_interactions = []
     formal_interaction_cells = []
 
@@ -342,6 +357,31 @@ def main():
             record_interaction(
                 "checkpoint_prompt_interaction",
                 f"{left_supervision}_minus_{right_supervision}", left, right, rows,
+            )
+
+    # Statistical boundary for the causal ladder. Descriptive-average rows compare
+    # absolute downstream performance under rich prompts. Correspondence rows are
+    # the paired three-way interaction:
+    # (Correct-Shuffled)_left - (Correct-Shuffled)_right.
+    boundary_bases = sorted({
+        (key[0], key[1], key[2], key[3], key[7]) for key in checkpoint_boundary_lookup
+    }, key=str)
+    for matrix, spec, ipc, visual, effect in boundary_bases:
+        for left_supervision, right_supervision in checkpoint_pairs:
+            left = (matrix, spec, ipc, visual, left_supervision, effect)
+            right = (matrix, spec, ipc, visual, right_supervision, effect)
+            rows = paired_effect_interaction(
+                _effect_rows(checkpoint_boundary_lookup, left),
+                _effect_rows(checkpoint_boundary_lookup, right),
+                broadcast_right_training_seed=right_supervision == "frozen",
+            )
+            analysis = (
+                "checkpoint_descriptive_average"
+                if effect == "descriptive_average"
+                else "checkpoint_correspondence_interaction"
+            )
+            record_interaction(
+                analysis, f"{left_supervision}_minus_{right_supervision}", left, right, rows
             )
 
     # Cross-dataset generality at matched seeds/repeats. New matrices use the same
@@ -424,7 +464,11 @@ def main():
             "correspondence_robustness": "correct-mean(shuffled shifts), with shifts averaged before bootstrap",
             "correct_utility": "correct-label",
             "descriptive_marginal": "mean(correct, shuffle shift 1)-label, paired before averaging",
+            "descriptive_average": "mean(correct, shuffle shift 1), paired before checkpoint comparison",
             "correspondence": "correct-shuffle shift 1, paired before averaging",
+            "checkpoint_correspondence_interaction": (
+                "(correct-shuffle shift 1)_left checkpoint minus the same effect at the right checkpoint"
+            ),
         },
         "bootstrap_order": "training seed -> generation seed -> paired classifier repeat",
         "formal_interaction_bootstrap_unit": (
@@ -473,6 +517,15 @@ def main():
         *formal_fields[:12], "training_seed", "generation_seed", "mean_paired_interaction",
         "paired_interactions",
     ))
+    checkpoint_boundaries = [
+        row for row in formal_interactions
+        if row["analysis"] in {
+            "checkpoint_descriptive_average", "checkpoint_correspondence_interaction"
+        }
+    ]
+    write_csv(
+        output / "checkpoint_statistical_boundaries.csv", checkpoint_boundaries, formal_fields
+    )
     write_csv(output / "incomplete_cells.csv", incomplete, (
         "matrix", "spec", "ipc", "visual", "supervision", "training_seed", "generation_seed",
         "prompt", "shuffle_shift", "evaluation_log", "reason",
@@ -480,6 +533,9 @@ def main():
     plot(performance, contrasts, output / "conditioning_interface_matrix_summary.png")
     plot_formal_interactions(
         formal_interactions, output / "conditioning_interface_formal_interactions.png"
+    )
+    plot_checkpoint_boundaries(
+        checkpoint_boundaries, output / "checkpoint_statistical_boundaries.png"
     )
     print(json.dumps({
         "performance_rows": len(performance), "contrast_rows": len(contrasts),
@@ -580,6 +636,44 @@ def plot_formal_interactions(rows, destination):
         if selected:
             axis.legend(fontsize=6)
     figure.suptitle("Formal prompt-interface interaction tests")
+    figure.tight_layout()
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
+
+
+def plot_checkpoint_boundaries(rows, destination):
+    import matplotlib.pyplot as plt
+
+    figure, axes = plt.subplots(1, 2, figsize=(14, 5), squeeze=False)
+    panels = (
+        ("checkpoint_descriptive_average", "Checkpoint effect on descriptive average"),
+        ("checkpoint_correspondence_interaction", "Checkpoint x cluster correspondence"),
+    )
+    for axis, (analysis, title) in zip(axes[0], panels):
+        selected = [row for row in rows if row["analysis"] == analysis]
+        grouped = _group(
+            selected,
+            lambda row: (
+                row["matrix_left"], row["spec_left"], row["ipc"], row["contrast"]
+            ),
+        )
+        categories = sorted({row["visual"] for row in selected}, key=_visual_order)
+        positions = {category: index for index, category in enumerate(categories)}
+        for key, group in grouped.items():
+            group = sorted(group, key=lambda row: _visual_order(row["visual"]))
+            _errorbar_rows(
+                axis, group, positions, marker="o",
+                label=f"{key[0]} {key[1]} IPC{key[2]} {key[3]}",
+            )
+        axis.axhline(0, color="black", linestyle="--", linewidth=1)
+        axis.set_title(title)
+        axis.set_xlabel("Visual interface")
+        axis.set_ylabel("Paired checkpoint difference")
+        axis.set_xticks(range(len(categories)), [_visual_tick(value) for value in categories])
+        axis.grid(alpha=0.25)
+        if selected:
+            axis.legend(fontsize=6)
+    figure.suptitle("Checkpoint statistical boundaries")
     figure.tight_layout()
     figure.savefig(destination, dpi=180)
     plt.close(figure)
