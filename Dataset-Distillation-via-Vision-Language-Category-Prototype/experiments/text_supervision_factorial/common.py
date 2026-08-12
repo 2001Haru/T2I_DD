@@ -69,6 +69,32 @@ def build_unpaired_donors(class_indices, seed, epoch):
     return donors
 
 
+def build_sparse_bank_donors(class_indices, bank_sources, seed, epoch):
+    """Assign a small caption bank evenly within each class without self-pairs."""
+    total = sum(len(indices) for indices in class_indices.values())
+    donors = [-1] * total
+    for class_offset, class_key in enumerate(sorted(class_indices)):
+        images = list(class_indices[class_key])
+        sources = list(bank_sources[class_key])
+        if len(sources) < 2 or len(set(sources)) != len(sources):
+            raise ValueError(f"Sparse bank for {class_key} needs at least two unique sources")
+        if not set(sources).issubset(images):
+            raise ValueError(f"Sparse bank contains an out-of-class source for {class_key}")
+        rng = random.Random(int(seed) + int(epoch) * 1_000_003 + class_offset * 10_007)
+        targets = [sources[position % len(sources)] for position in range(len(images))]
+        for _ in range(10_000):
+            rng.shuffle(targets)
+            if all(image != donor for image, donor in zip(images, targets)):
+                break
+        else:
+            raise RuntimeError(f"Could not construct sparse-bank derangement for {class_key}")
+        for image, donor in zip(images, targets):
+            donors[image] = donor
+    if any(donor < 0 or index == donor for index, donor in enumerate(donors)):
+        raise AssertionError("Sparse-bank assignment is incomplete or contains a self-pair")
+    return donors
+
+
 def sha256_file(path):
     digest = hashlib.sha256()
     with open(path, "rb") as handle:

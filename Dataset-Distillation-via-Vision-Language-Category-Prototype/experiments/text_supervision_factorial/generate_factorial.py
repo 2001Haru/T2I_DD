@@ -24,6 +24,9 @@ from common import (  # noqa: E402
     stable_image_seed,
 )
 
+GENERATION_SUPERVISION_MODES = SUPERVISION_MODES + ("sparse_ft",)
+GENERATION_PROMPT_MODES = PROMPT_MODES + ("bank",)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate a text-supervision x inference-prompt factorial")
@@ -31,8 +34,9 @@ def parse_args():
     parser.add_argument("--dcs", required=True)
     parser.add_argument("--base-model", required=True)
     parser.add_argument("--model", action="append", default=[], help="MODE=DIFFUSERS_PATH")
-    parser.add_argument("--supervisions", nargs="+", choices=SUPERVISION_MODES, default=SUPERVISION_MODES)
-    parser.add_argument("--prompts", nargs="+", choices=PROMPT_MODES, default=PROMPT_MODES)
+    parser.add_argument("--supervisions", nargs="+", choices=GENERATION_SUPERVISION_MODES, default=SUPERVISION_MODES)
+    parser.add_argument("--prompts", nargs="+", choices=GENERATION_PROMPT_MODES, default=PROMPT_MODES)
+    parser.add_argument("--prompt-bank", default=None)
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--generation-seeds", type=int, nargs="+", default=(0, 1))
     parser.add_argument("--ipc", type=int, default=10)
@@ -58,7 +62,7 @@ def parse_models(base_model, entries):
         if "=" not in entry:
             raise ValueError(f"Expected MODE=PATH for --model, got {entry}")
         mode, path = entry.split("=", 1)
-        if mode not in SUPERVISION_MODES or mode == "frozen":
+        if mode not in GENERATION_SUPERVISION_MODES or mode == "frozen":
             raise ValueError(f"Invalid trained supervision mode: {mode}")
         models[mode] = path
     return models
@@ -102,11 +106,15 @@ def validate(prototypes, dcs, ipc, shift):
         shuffled_prompt_index(0, len(values), shift)
 
 
-def prompt_for(synset, index, mode, dcs, shift):
+def prompt_for(synset, index, image_index, mode, dcs, shift, prompt_bank):
     if mode == "label":
-        return IMAGENET2012_CLASSES[synset], None
+        return IMAGENET2012_CLASSES[synset], None, None
+    if mode == "bank":
+        entries = prompt_bank["classes"][synset]
+        source = image_index % len(entries)
+        return str(entries[source]["caption"]), source, entries[source]["relative"]
     source = index if mode == "correct" else shuffled_prompt_index(index, len(dcs[synset]), shift)
-    return str(dcs[synset][source]), source
+    return str(dcs[synset][source]), source, None
 
 
 def schedule_matched_noise(prototype_data, image_seed, device, dtype=torch.float16):
@@ -120,7 +128,7 @@ def schedule_matched_noise(prototype_data, image_seed, device, dtype=torch.float
     ).unsqueeze(0)
 
 
-def generate(pipe, prototypes, dcs, supervision, prompt_mode, generation_seed, output_dir, args):
+def generate(pipe, prototypes, dcs, prompt_bank, supervision, prompt_mode, generation_seed, output_dir, args):
     records = []
     completed = 0
     for class_index, (synset, values) in enumerate(prototypes.items()):
@@ -130,13 +138,17 @@ def generate(pipe, prototypes, dcs, supervision, prompt_mode, generation_seed, o
         for repetition in range(repeats):
             for prototype_index, prototype_data in enumerate(values):
                 image_index = repetition * len(values) + prototype_index
-                prompt, source = prompt_for(synset, prototype_index, prompt_mode, dcs, args.shuffle_shift)
+                prompt, source, source_relative = prompt_for(
+                    synset, prototype_index, image_index, prompt_mode, dcs,
+                    args.shuffle_shift, prompt_bank
+                )
                 image_seed = stable_image_seed(generation_seed, class_index, image_index)
                 records.append({
                     "synset": synset,
                     "image_index": image_index,
                     "prototype_index": prototype_index,
                     "prompt_source_index": source,
+                    "prompt_source_relative": source_relative,
                     "prompt": prompt,
                     "image_seed": image_seed,
                 })
@@ -184,6 +196,12 @@ def main():
     dcs_path = Path(args.dcs).resolve()
     prototypes, dcs = load_json(prototype_path), load_json(dcs_path)
     validate(prototypes, dcs, args.ipc, args.shuffle_shift)
+    prompt_bank = load_json(Path(args.prompt_bank).resolve()) if args.prompt_bank else None
+    if "bank" in args.prompts:
+        if prompt_bank is None:
+            raise ValueError("The bank prompt mode requires --prompt-bank")
+        if set(prompt_bank.get("classes", {})) != set(prototypes):
+            raise ValueError("Prompt-bank and prototype classes differ")
     output_root = Path(args.output_root).resolve()
 
     for supervision in args.supervisions:
@@ -199,7 +217,11 @@ def main():
         pipe.set_progress_bar_config(disable=True)
         for generation_seed in args.generation_seeds:
             for prompt_mode in args.prompts:
-                condition = condition_name(supervision, prompt_mode)
+                condition = (
+                    condition_name(supervision, prompt_mode)
+                    if supervision in SUPERVISION_MODES and prompt_mode in PROMPT_MODES
+                    else f"{supervision}_{prompt_mode}"
+                )
                 output_dir = output_root / f"seed_{generation_seed}" / condition
                 manifest = {
                     "format_version": 1,
@@ -211,6 +233,8 @@ def main():
                     "prototype_sha256": sha256_file(prototype_path),
                     "dcs_path": str(dcs_path),
                     "dcs_sha256": sha256_file(dcs_path),
+                    "prompt_bank_path": str(Path(args.prompt_bank).resolve()) if args.prompt_bank else None,
+                    "prompt_bank_sha256": sha256_file(args.prompt_bank) if args.prompt_bank else None,
                     "generation_seed": generation_seed,
                     "ipc": args.ipc,
                     "strength": args.strength if args.visual_mode != "pure_noise" else None,
@@ -229,7 +253,10 @@ def main():
                     "paired_noise_across_all_cells": True,
                 }
                 ensure_manifest(output_dir, manifest, resume=args.resume)
-                records, count = generate(pipe, prototypes, dcs, supervision, prompt_mode, generation_seed, output_dir, args)
+                records, count = generate(
+                    pipe, prototypes, dcs, prompt_bank, supervision, prompt_mode,
+                    generation_seed, output_dir, args
+                )
                 expected = len(prototypes) * args.ipc
                 if count != expected:
                     raise RuntimeError(f"Generated {count}, expected {expected}: {output_dir}")

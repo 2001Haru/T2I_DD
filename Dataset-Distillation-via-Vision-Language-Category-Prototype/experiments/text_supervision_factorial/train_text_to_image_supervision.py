@@ -26,7 +26,7 @@ import sys
 
 sys.path.insert(0, str(DISTILLATION_DIR))
 from classes import IMAGENET2012_CLASSES  # noqa: E402
-from common import build_unpaired_donors  # noqa: E402
+from common import build_sparse_bank_donors, build_unpaired_donors  # noqa: E402
 
 
 class LocalEMAModel:
@@ -104,7 +104,7 @@ def parse_args():
     parser.add_argument("--output-dir", required=True)
     parser.add_argument(
         "--supervision",
-        choices=("empty", "constant", "label", "matched", "unpaired"),
+        choices=("empty", "constant", "label", "matched", "unpaired", "sparse_unpaired"),
         required=True,
     )
     parser.add_argument(
@@ -112,6 +112,7 @@ def parse_args():
         default="A natural photo.",
         help="Shared non-class text used by constant supervision.",
     )
+    parser.add_argument("--sparse-bank", default=None)
     parser.add_argument("--resolution", type=int, default=512)
     parser.add_argument("--train-batch-size", type=int, default=4)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=2)
@@ -174,7 +175,8 @@ def read_records(train_root, caption_file):
 
 
 class SupervisionDataset(Dataset):
-    def __init__(self, rows, tokenizer, supervision, resolution, random_flip, seed, constant_prompt):
+    def __init__(self, rows, tokenizer, supervision, resolution, random_flip, seed, constant_prompt,
+                 sparse_bank=None):
         self.rows = rows
         self.tokenizer = tokenizer
         self.supervision = supervision
@@ -191,14 +193,37 @@ class SupervisionDataset(Dataset):
         self.class_indices = defaultdict(list)
         for index, row in enumerate(rows):
             self.class_indices[row["synset"]].append(index)
+        self.sparse_bank_sources = None
+        if supervision == "sparse_unpaired":
+            if sparse_bank is None:
+                raise ValueError("sparse_unpaired supervision requires --sparse-bank")
+            by_relative = {row["relative"]: index for index, row in enumerate(rows)}
+            classes = sparse_bank.get("classes", {})
+            if set(classes) != set(self.class_indices):
+                raise ValueError("Sparse bank classes differ from the training classes")
+            self.sparse_bank_sources = {}
+            for synset, entries in classes.items():
+                sources = []
+                for entry in entries:
+                    relative = str(entry["relative"]).replace("\\", "/")
+                    if relative not in by_relative:
+                        raise ValueError(f"Sparse-bank source is absent: {relative}")
+                    source = by_relative[relative]
+                    if self.rows[source]["caption"] != str(entry["caption"]).strip():
+                        raise ValueError(f"Sparse-bank caption differs from metadata: {relative}")
+                    sources.append(source)
+                self.sparse_bank_sources[synset] = sources
         self.set_epoch(0)
 
     def set_epoch(self, epoch):
         self.epoch = int(epoch)
         self.caption_donors = list(range(len(self.rows)))
-        if self.supervision != "unpaired":
-            return
-        self.caption_donors = build_unpaired_donors(self.class_indices, self.seed, self.epoch)
+        if self.supervision == "unpaired":
+            self.caption_donors = build_unpaired_donors(self.class_indices, self.seed, self.epoch)
+        elif self.supervision == "sparse_unpaired":
+            self.caption_donors = build_sparse_bank_donors(
+                self.class_indices, self.sparse_bank_sources, self.seed, self.epoch
+            )
 
     def assignment_audit(self):
         return {
@@ -206,9 +231,16 @@ class SupervisionDataset(Dataset):
             "supervision": self.supervision,
             "images": len(self.rows),
             "self_pairs": sum(i == donor for i, donor in enumerate(self.caption_donors)),
-            "caption_multiset_preserved_by_class": all(
+            "caption_multiset_preserved_by_class": self.supervision != "sparse_unpaired" and all(
                 sorted(self.caption_donors[i] for i in indices) == sorted(indices)
                 for indices in self.class_indices.values()
+            ),
+            "sparse_bank_balanced_by_class": (
+                all(
+                    max([self.caption_donors[i] for i in indices].count(source) for source in self.sparse_bank_sources[key])
+                    - min([self.caption_donors[i] for i in indices].count(source) for source in self.sparse_bank_sources[key]) <= 1
+                    for key, indices in self.class_indices.items()
+                ) if self.sparse_bank_sources else None
             ),
             "assignment_sha256": __import__("hashlib").sha256(
                 json.dumps(self.caption_donors).encode("utf-8")
@@ -349,6 +381,11 @@ def main():
         unet.enable_gradient_checkpointing()
 
     rows = read_records(args.train_root, args.caption_file)
+    sparse_bank = None
+    if args.supervision == "sparse_unpaired":
+        if not args.sparse_bank:
+            raise ValueError("--sparse-bank is required for sparse_unpaired supervision")
+        sparse_bank = json.loads(Path(args.sparse_bank).read_text(encoding="utf-8"))
     dataset = SupervisionDataset(
         rows,
         tokenizer,
@@ -357,6 +394,7 @@ def main():
         args.random_flip,
         args.seed,
         args.constant_prompt,
+        sparse_bank,
     )
     dataloader = DataLoader(
         dataset,
@@ -536,6 +574,7 @@ def main():
             "epochs": args.num_train_epochs,
             "supervision": args.supervision,
             "seed": args.seed,
+            "sparse_bank": str(Path(args.sparse_bank).resolve()) if args.sparse_bank else None,
             "loss_files": ["timestep_loss_intervals.jsonl", "timestep_loss_epochs.csv"],
         }
         (output_dir / "training_summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
