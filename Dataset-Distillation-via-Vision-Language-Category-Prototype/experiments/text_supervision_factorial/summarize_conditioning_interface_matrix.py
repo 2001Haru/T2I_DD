@@ -67,6 +67,215 @@ def summarize(rows):
     }
 
 
+def weighted_stratified_estimate(cells, weights):
+    means = {
+        stratum: statistics.fmean(value for values in rows.values() for value in values)
+        for stratum, rows in cells.items()
+    }
+    return sum(weights[stratum] * means[stratum] for stratum in weights)
+
+
+def fixed_strata_hierarchical_bootstrap(cells, weights, samples=10000, seed=20260812):
+    """Bootstrap fixed dataset-strength strata with shared draws across strengths."""
+    if set(cells) != set(weights):
+        raise ValueError("Pooled-estimand cells and weights differ")
+    specs = sorted({stratum[0] for stratum in cells})
+    rng = random.Random(seed)
+    estimates = []
+    for _ in range(samples):
+        sampled = {stratum: [] for stratum in cells}
+        for spec in specs:
+            spec_strata = sorted(
+                [stratum for stratum in cells if stratum[0] == spec], key=str
+            )
+            training_sets = [
+                {training_seed for training_seed, _ in cells[stratum]}
+                for stratum in spec_strata
+            ]
+            common_training = sorted(set.intersection(*training_sets), key=str)
+            if not common_training:
+                raise ValueError(f"No paired training seeds for pooled estimand: {spec}")
+            for _ in common_training:
+                training_seed = rng.choice(common_training)
+                generation_sets = [
+                    {
+                        generation_seed
+                        for candidate_training, generation_seed in cells[stratum]
+                        if candidate_training == training_seed
+                    }
+                    for stratum in spec_strata
+                ]
+                common_generations = sorted(set.intersection(*generation_sets))
+                if not common_generations:
+                    raise ValueError(
+                        f"No paired generation seeds for pooled estimand: {spec}/{training_seed}"
+                    )
+                for _ in common_generations:
+                    generation_seed = rng.choice(common_generations)
+                    vectors = [
+                        cells[stratum][(training_seed, generation_seed)]
+                        for stratum in spec_strata
+                    ]
+                    if len({len(vector) for vector in vectors}) != 1:
+                        raise ValueError("Classifier repeat counts differ across pooled strata")
+                    repeat_count = len(vectors[0])
+                    repeat_draw = [rng.randrange(repeat_count) for _ in range(repeat_count)]
+                    for stratum, vector in zip(spec_strata, vectors):
+                        sampled[stratum].extend(vector[index] for index in repeat_draw)
+        stratum_means = {
+            stratum: statistics.fmean(sampled[stratum]) for stratum in sampled
+        }
+        estimates.append(sum(weights[stratum] * stratum_means[stratum] for stratum in weights))
+    estimates.sort()
+    return estimates
+
+
+def percentile_interval(estimates, confidence):
+    tail = (1.0 - confidence) / 2.0
+    count = len(estimates)
+    return (
+        estimates[int(tail * count)],
+        estimates[min(count - 1, int((1.0 - tail) * count))],
+    )
+
+
+def pooled_estimand_summary(cells, weights, expected_direction=None, equivalence_margin=None):
+    point = weighted_stratified_estimate(cells, weights)
+    estimates = fixed_strata_hierarchical_bootstrap(cells, weights)
+    lower95, upper95 = percentile_interval(estimates, 0.95)
+    lower90, upper90 = percentile_interval(estimates, 0.90)
+    centered = [estimate - point for estimate in estimates]
+    row = {
+        "mean": point,
+        "bootstrap_ci95_lower": lower95,
+        "bootstrap_ci95_upper": upper95,
+        "bootstrap_ci90_lower": lower90,
+        "bootstrap_ci90_upper": upper90,
+        "fixed_strata": len(cells),
+        "training_generation_cells": sum(len(rows) for rows in cells.values()),
+        "paired_classifier_observations": sum(
+            len(values) for rows in cells.values() for values in rows.values()
+        ),
+    }
+    if expected_direction == "positive":
+        row["bootstrap_p_one_sided"] = (
+            sum(value <= -point for value in centered) + 1
+        ) / (len(centered) + 1)
+    if equivalence_margin is not None:
+        row["equivalence_margin"] = equivalence_margin
+        row["equivalent_by_90pct_ci"] = (
+            lower90 > -equivalence_margin and upper90 < equivalence_margin
+        )
+        if row["equivalent_by_90pct_ci"]:
+            row["decision"] = "practically_equivalent"
+        elif lower95 > 0:
+            row["decision"] = "matched_better"
+        elif upper95 < 0:
+            row["decision"] = "matched_worse"
+        else:
+            row["decision"] = "inconclusive"
+    return row
+
+
+def preregistered_pooled_estimands(checkpoint_effects, matrix="R", ipc=50):
+    specs = ("nette", "woof")
+    visuals = ("strength_0.7", "strength_0.9")
+
+    def collect(left, right, effect):
+        cells, missing = {}, []
+        for spec in specs:
+            for visual in visuals:
+                key = (matrix, spec, ipc, visual, left, right, effect)
+                if key not in checkpoint_effects:
+                    missing.append(key)
+                else:
+                    cells[(spec, visual)] = checkpoint_effects[key]
+        return cells, missing
+
+    if not any(key[0] == matrix for key in checkpoint_effects):
+        return [], {"status": "not_available", "matrix": matrix, "missing": []}
+
+    marginal_cells, marginal_missing = collect(
+        "unpaired_ft", "label_ft", "descriptive_average"
+    )
+    matching_performance_cells, performance_missing = collect(
+        "matched_ft", "unpaired_ft", "descriptive_average"
+    )
+    correspondence_cells, correspondence_missing = collect(
+        "matched_ft", "unpaired_ft", "correspondence"
+    )
+    missing = marginal_missing + performance_missing + correspondence_missing
+    if missing:
+        return [], {
+            "status": "incomplete", "matrix": matrix,
+            "missing": [list(key) for key in missing],
+        }
+
+    equal_four = {stratum: 0.25 for stratum in marginal_cells}
+    rows = [{
+        "estimand": "E1_rich_caption_marginal",
+        "scope": "nette_woof_strength_0.7_0.9",
+        "contrast": "unpaired_ft_minus_label_ft",
+        "effect": "descriptive_average",
+        **pooled_estimand_summary(
+            marginal_cells, equal_four, expected_direction="positive"
+        ),
+    }]
+
+    e2_rows = {}
+    for spec in specs:
+        selected = {
+            stratum: values for stratum, values in correspondence_cells.items()
+            if stratum[0] == spec
+        }
+        weights = {stratum: 0.5 for stratum in selected}
+        summary = pooled_estimand_summary(selected, weights)
+        e2_rows[spec] = summary
+        rows.append({
+            "estimand": "E2_matching_correspondence",
+            "scope": spec,
+            "contrast": "matched_ft_minus_unpaired_ft",
+            "effect": "correspondence",
+            **summary,
+        })
+    heterogeneity_weights = {
+        stratum: (0.5 if stratum[0] == "woof" else -0.5)
+        for stratum in correspondence_cells
+    }
+    rows.append({
+        "estimand": "E2_matching_correspondence_dataset_heterogeneity",
+        "scope": "woof_minus_nette",
+        "contrast": "matched_ft_minus_unpaired_ft",
+        "effect": "correspondence",
+        **pooled_estimand_summary(correspondence_cells, heterogeneity_weights),
+    })
+
+    rows.append({
+        "estimand": "E3_matching_performance_equivalence",
+        "scope": "nette_woof_strength_0.7_0.9",
+        "contrast": "matched_ft_minus_unpaired_ft",
+        "effect": "descriptive_average",
+        **pooled_estimand_summary(
+            matching_performance_cells, equal_four, equivalence_margin=1.0
+        ),
+    })
+    return rows, {
+        "status": "complete",
+        "matrix": matrix,
+        "run_id": "prototype_checkpoint_covariance_v0",
+        "ipc": ipc,
+        "datasets": list(specs),
+        "visual_interfaces": list(visuals),
+        "shuffle_realization": 1,
+        "stratum_weighting": "equal weight over dataset x strength",
+        "bootstrap_order": (
+            "fixed dataset strata -> paired training seed -> paired generation seed -> "
+            "shared paired classifier-repeat draw across strengths"
+        ),
+        "equivalence_margin_points": 1.0,
+    }
+
+
 def effect_vectors(normalized_lookup):
     """Build prompt effects before any seed averaging."""
     effects = {}
@@ -148,7 +357,8 @@ def main():
     args = parser.parse_args()
     output = Path(args.output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    full_index = json.loads(Path(args.evaluation_index).read_text(encoding="utf-8"))
+    evaluation_index = Path(args.evaluation_index).resolve()
+    full_index = json.loads(evaluation_index.read_text(encoding="utf-8"))
     index = [
         item for item in full_index
         if (not args.matrices or item["matrix"] in args.matrices)
@@ -157,6 +367,18 @@ def main():
     ]
     if not index:
         raise ValueError("No evaluation cells match the requested filters")
+    expected_r_run_id = "prototype_checkpoint_covariance_v0"
+    selected_matrices = {item["matrix"] for item in index}
+    if (
+        "R" in selected_matrices
+        and evaluation_index.parent.parent.name == "schedule_matched_followup_runs"
+        and evaluation_index.parent.name != expected_r_run_id
+    ):
+        raise RuntimeError(
+            "Matrix R pooled estimands must come from "
+            f"schedule_matched_followup_runs/{expected_r_run_id}; got "
+            f"{evaluation_index.parent}"
+        )
 
     cells, lookup, planned_lookup, incomplete = [], {}, {}, []
     for item in index:
@@ -559,8 +781,14 @@ def main():
             left, right, rows,
         )
 
+    pooled_estimands, pooled_protocol = preregistered_pooled_estimands(
+        checkpoint_boundary_effects, matrix="R", ipc=50
+    )
+    pooled_protocol["evaluation_index"] = str(evaluation_index)
+    pooled_protocol["observed_run_id"] = evaluation_index.parent.name
+
     payload = {
-        "format_version": 2,
+        "format_version": 3,
         "partial_summary": args.allow_incomplete,
         "filters": {"matrices": args.matrices, "specs": args.specs, "ipcs": args.ipcs},
         "coverage": {
@@ -597,6 +825,18 @@ def main():
                 "[(checkpoint effect)_Woof-(checkpoint effect)_Nette]_strength 0.9 minus the same "
                 "dataset contrast at strength 0.7"
             ),
+            "E1_rich_caption_marginal": (
+                "equal-stratum mean of descriptive-average(Unpaired-FT minus Label-FT) over "
+                "Nette/Woof x strength 0.7/0.9"
+            ),
+            "E2_matching_correspondence": (
+                "within-dataset equal-strength mean of (Correct-Shuffled)_Matched-FT minus "
+                "(Correct-Shuffled)_Unpaired-FT, plus Woof-minus-Nette heterogeneity"
+            ),
+            "E3_matching_performance_equivalence": (
+                "equal-stratum mean of descriptive-average(Matched-FT minus Unpaired-FT); "
+                "practical equivalence requires its 90% CI inside +/-1 accuracy point"
+            ),
         },
         "bootstrap_order": "training seed -> generation seed -> paired classifier repeat",
         "formal_interaction_bootstrap_unit": (
@@ -605,6 +845,8 @@ def main():
         ),
         "performance": performance, "contrasts": contrasts,
         "formal_interactions": formal_interactions,
+        "preregistered_pooled_estimands": pooled_estimands,
+        "preregistered_pooled_estimand_protocol": pooled_protocol,
         "interpretation_boundary": (
             "Strength changes prototype corruption and effective denoising horizon. Pure-noise is a distinct "
             "text-to-image interface; without a visual source cluster, its Correct-Shuffled contrast measures "
@@ -667,6 +909,23 @@ def main():
         checkpoint_heterogeneity,
         formal_fields,
     )
+    pooled_fields = (
+        "estimand", "scope", "contrast", "effect", "mean",
+        "bootstrap_ci95_lower", "bootstrap_ci95_upper",
+        "bootstrap_ci90_lower", "bootstrap_ci90_upper", "bootstrap_p_one_sided",
+        "equivalence_margin", "equivalent_by_90pct_ci", "decision",
+        "fixed_strata", "training_generation_cells", "paired_classifier_observations",
+    )
+    write_csv(
+        output / "preregistered_pooled_estimands.csv", pooled_estimands, pooled_fields
+    )
+    (output / "preregistered_pooled_estimands.json").write_text(
+        json.dumps(
+            {"protocol": pooled_protocol, "estimands": pooled_estimands},
+            indent=2, sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
     write_csv(output / "incomplete_cells.csv", incomplete, (
         "matrix", "spec", "ipc", "visual", "supervision", "training_seed", "generation_seed",
         "prompt", "shuffle_shift", "evaluation_log", "reason",
@@ -681,9 +940,15 @@ def main():
     plot_checkpoint_heterogeneity(
         checkpoint_heterogeneity, output / "checkpoint_heterogeneity_interactions.png"
     )
+    if pooled_estimands:
+        plot_preregistered_pooled_estimands(
+            pooled_estimands, output / "preregistered_pooled_estimands.png"
+        )
     print(json.dumps({
         "performance_rows": len(performance), "contrast_rows": len(contrasts),
         "formal_interaction_rows": len(formal_interactions),
+        "pooled_estimand_status": pooled_protocol["status"],
+        "pooled_estimand_rows": len(pooled_estimands),
     }, indent=2))
 
 
@@ -879,6 +1144,46 @@ def plot_checkpoint_heterogeneity(rows, destination):
         if selected:
             axis.legend(fontsize=6)
     figure.suptitle("Checkpoint-effect heterogeneity boundaries")
+    figure.tight_layout()
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
+
+
+def plot_preregistered_pooled_estimands(rows, destination):
+    import matplotlib.pyplot as plt
+
+    ordered = []
+    for estimand, scope in (
+        ("E1_rich_caption_marginal", "nette_woof_strength_0.7_0.9"),
+        ("E2_matching_correspondence", "nette"),
+        ("E2_matching_correspondence", "woof"),
+        ("E2_matching_correspondence_dataset_heterogeneity", "woof_minus_nette"),
+        ("E3_matching_performance_equivalence", "nette_woof_strength_0.7_0.9"),
+    ):
+        ordered.append(next(
+            row for row in rows
+            if row["estimand"] == estimand and row["scope"] == scope
+        ))
+    labels = ("E1 marginal", "E2 Nette", "E2 Woof", "E2 heterogeneity", "E3 performance")
+    centers = [row["mean"] for row in ordered]
+    lower = [row["bootstrap_ci95_lower"] for row in ordered]
+    upper = [row["bootstrap_ci95_upper"] for row in ordered]
+    figure, axis = plt.subplots(figsize=(11, 5))
+    axis.errorbar(
+        range(len(ordered)), centers,
+        yerr=(
+            [center - bound for center, bound in zip(centers, lower)],
+            [bound - center for center, bound in zip(centers, upper)],
+        ),
+        fmt="o", capsize=5, markersize=7,
+    )
+    axis.axhline(0, color="black", linestyle="--", linewidth=1)
+    axis.axhspan(-1, 1, color="gray", alpha=0.10, label="E3 equivalence band (+/-1 pt)")
+    axis.set_xticks(range(len(labels)), labels, rotation=12)
+    axis.set_ylabel("Paired accuracy difference (95% bootstrap CI)")
+    axis.set_title("Preregistered pooled prompt-supervision estimands")
+    axis.grid(axis="y", alpha=0.25)
+    axis.legend()
     figure.tight_layout()
     figure.savefig(destination, dpi=180)
     plt.close(figure)

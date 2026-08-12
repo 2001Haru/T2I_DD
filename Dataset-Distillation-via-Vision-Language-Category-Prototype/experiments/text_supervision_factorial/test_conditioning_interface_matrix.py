@@ -285,6 +285,45 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
                 "matched_ft_minus_unpaired_ft__(woof-nette)_strength_0.9_minus_strength_0.7",
                 "correspondence", 50, "strength_0.9", "R", "woof-minus-nette",
             ), -6.0)
+            with (root / "summary" / "preregistered_pooled_estimands.csv").open(
+                encoding="utf-8"
+            ) as handle:
+                pooled = list(csv.DictReader(handle))
+
+            def pooled_value(estimand, scope):
+                return next(
+                    row for row in pooled
+                    if row["estimand"] == estimand and row["scope"] == scope
+                )
+
+            self.assertEqual(float(pooled_value(
+                "E1_rich_caption_marginal", "nette_woof_strength_0.7_0.9"
+            )["mean"]), 3.0)
+            self.assertEqual(float(pooled_value(
+                "E2_matching_correspondence", "nette"
+            )["mean"]), 1.0)
+            self.assertEqual(float(pooled_value(
+                "E2_matching_correspondence", "woof"
+            )["mean"]), 0.0)
+            self.assertEqual(float(pooled_value(
+                "E2_matching_correspondence_dataset_heterogeneity", "woof_minus_nette"
+            )["mean"]), -1.0)
+            equivalence = pooled_value(
+                "E3_matching_performance_equivalence", "nette_woof_strength_0.7_0.9"
+            )
+            self.assertEqual(float(equivalence["mean"]), 1.75)
+            self.assertEqual(equivalence["equivalent_by_90pct_ci"], "False")
+            self.assertEqual(equivalence["decision"], "matched_better")
+            pooled_payload = json.loads(
+                (root / "summary" / "preregistered_pooled_estimands.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(pooled_payload["protocol"]["status"], "complete")
+            self.assertEqual(
+                pooled_payload["protocol"]["run_id"],
+                "prototype_checkpoint_covariance_v0",
+            )
             generalized = [
                 row for row in rows
                 if row["analysis"] == "dataset_interaction"
@@ -301,6 +340,10 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
             )
             self.assertGreater(
                 (root / "summary" / "checkpoint_heterogeneity_interactions.png").stat().st_size,
+                10_000,
+            )
+            self.assertGreater(
+                (root / "summary" / "preregistered_pooled_estimands.png").stat().st_size,
                 10_000,
             )
 

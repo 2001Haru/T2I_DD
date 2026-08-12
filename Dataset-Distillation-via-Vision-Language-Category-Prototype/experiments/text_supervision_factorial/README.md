@@ -398,3 +398,19 @@ Primary outputs are:
 `pure_noise` remains a full txt2img endpoint. It is deliberately distinct from
 `schedule_matched_noise`, which is the causal control for prototype content at
 an unchanged shortened denoising schedule.
+
+The three preregistered pooled checkpoint estimands must be computed from the
+completed Matrix R index only:
+
+```bash
+R_RUN=./schedule_matched_followup_runs/prototype_checkpoint_covariance_v0
+python experiments/text_supervision_factorial/summarize_conditioning_interface_matrix.py \
+  --evaluation-index "$R_RUN/evaluation_index.json" \
+  --output-dir "$R_RUN/summary"
+```
+
+This writes `preregistered_pooled_estimands.csv`, its protocol-bearing JSON,
+and a summary plot. The script requires complete Nette/Woof x strength
+0.7/0.9 cells for Label-FT, Unpaired-FT, and Matched-FT. Missing cells suppress
+the pooled conclusions, and a Matrix R index under a different standard run
+directory is rejected.
