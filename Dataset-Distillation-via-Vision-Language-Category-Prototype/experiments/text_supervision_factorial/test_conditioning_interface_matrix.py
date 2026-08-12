@@ -192,6 +192,23 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
             add_triplet("E", "nette", 50, 0.7, "label_ft", [50, 50], [56, 56], [54, 54])
             add_triplet("E", "nette", 50, 0.7, "matched_ft", [50, 50], [60, 60], [56, 56])
 
+            # Complete R fixture for checkpoint x dataset x strength boundaries.
+            for spec, strength, supervision, scores in (
+                ("nette", 0.7, "label_ft", ([50, 50], [52, 52], [54, 54])),
+                ("nette", 0.7, "unpaired_ft", ([50, 50], [57, 57], [55, 55])),
+                ("nette", 0.7, "matched_ft", ([50, 50], [58, 58], [56, 56])),
+                ("woof", 0.7, "label_ft", ([50, 50], [52, 52], [54, 54])),
+                ("woof", 0.7, "unpaired_ft", ([50, 50], [55, 55], [55, 55])),
+                ("woof", 0.7, "matched_ft", ([50, 50], [59, 59], [57, 57])),
+                ("nette", 0.9, "label_ft", ([50, 50], [54, 54], [54, 54])),
+                ("nette", 0.9, "unpaired_ft", ([50, 50], [59, 59], [57, 57])),
+                ("nette", 0.9, "matched_ft", ([50, 50], [61, 61], [57, 57])),
+                ("woof", 0.9, "label_ft", ([50, 50], [52, 52], [52, 52])),
+                ("woof", 0.9, "unpaired_ft", ([50, 50], [56, 56], [54, 54])),
+                ("woof", 0.9, "matched_ft", ([50, 50], [57, 57], [57, 57])),
+            ):
+                add_triplet("R", spec, 50, strength, supervision, *scores)
+
             index_path = root / "index.json"
             index_path.write_text(json.dumps(index), encoding="utf-8")
             subprocess.run([
@@ -253,6 +270,21 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
                 "checkpoint_correspondence_interaction", "matched_ft_minus_unpaired_ft",
                 "correspondence", 50, "strength_0.7", "E", "woof",
             ), 0.0)
+            self.assertEqual(value(
+                "checkpoint_by_dataset_interaction",
+                "unpaired_ft_minus_label_ft__woof_minus_nette",
+                "descriptive_average", 50, "strength_0.7", "R", "woof",
+            ), -1.0)
+            self.assertEqual(value(
+                "checkpoint_by_strength_interaction",
+                "matched_ft_minus_unpaired_ft__strength_0.9_minus_strength_0.7",
+                "correspondence", 50, "strength_0.9", "R", "woof",
+            ), -4.0)
+            self.assertEqual(value(
+                "checkpoint_by_dataset_strength_interaction",
+                "matched_ft_minus_unpaired_ft__(woof-nette)_strength_0.9_minus_strength_0.7",
+                "correspondence", 50, "strength_0.9", "R", "woof-minus-nette",
+            ), -6.0)
             generalized = [
                 row for row in rows
                 if row["analysis"] == "dataset_interaction"
@@ -265,6 +297,10 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
             )
             self.assertGreater(
                 (root / "summary" / "checkpoint_statistical_boundaries.png").stat().st_size,
+                10_000,
+            )
+            self.assertGreater(
+                (root / "summary" / "checkpoint_heterogeneity_interactions.png").stat().st_size,
                 10_000,
             )
 

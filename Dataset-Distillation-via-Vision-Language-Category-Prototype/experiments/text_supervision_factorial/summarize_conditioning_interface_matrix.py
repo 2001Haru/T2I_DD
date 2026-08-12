@@ -297,6 +297,7 @@ def main():
     checkpoint_boundary_lookup = checkpoint_boundary_vectors(normalized_lookup)
     formal_interactions = []
     formal_interaction_cells = []
+    checkpoint_boundary_effects = {}
 
     def record_interaction(analysis, contrast, left_identity, right_identity, rows):
         if not rows:
@@ -383,6 +384,123 @@ def main():
             record_interaction(
                 analysis, f"{left_supervision}_minus_{right_supervision}", left, right, rows
             )
+            if rows:
+                checkpoint_boundary_effects[
+                    (matrix, spec, ipc, visual, left_supervision, right_supervision, effect)
+                ] = {
+                    (row["training_seed"], row["generation_seed"]): row["values"]
+                    for row in rows
+                }
+
+    # Generality boundary for checkpoint effects. The primary causal steps are
+    # Label-FT -> Unpaired-FT (caption marginal) and Unpaired-FT -> Matched-FT
+    # (training-time matching covariance). These interactions are only available
+    # in matrices, currently R, that contain both datasets, strengths, and all
+    # three checkpoints under a shared evaluation protocol.
+    causal_checkpoint_pairs = (
+        ("unpaired_ft", "label_ft"),
+        ("matched_ft", "unpaired_ft"),
+    )
+    heterogeneity_dataset = {}
+    heterogeneity_strength = {}
+    boundary_matrices = sorted({key[0] for key in checkpoint_boundary_effects})
+    for matrix in boundary_matrices:
+        ipcs = sorted({key[2] for key in checkpoint_boundary_effects if key[0] == matrix})
+        for ipc in ipcs:
+            for left_supervision, right_supervision in causal_checkpoint_pairs:
+                checkpoint_contrast = f"{left_supervision}_minus_{right_supervision}"
+                for effect in ("descriptive_average", "correspondence"):
+                    visuals = sorted({
+                        key[3] for key in checkpoint_boundary_effects
+                        if key[0] == matrix and key[2] == ipc
+                        and key[4:7] == (left_supervision, right_supervision, effect)
+                    }, key=_visual_order)
+                    for visual in visuals:
+                        woof_key = (
+                            matrix, "woof", ipc, visual, left_supervision,
+                            right_supervision, effect,
+                        )
+                        nette_key = (
+                            matrix, "nette", ipc, visual, left_supervision,
+                            right_supervision, effect,
+                        )
+                        rows = paired_effect_interaction(
+                            checkpoint_boundary_effects.get(woof_key, {}),
+                            checkpoint_boundary_effects.get(nette_key, {}),
+                        )
+                        if rows:
+                            heterogeneity_dataset[
+                                (matrix, ipc, visual, left_supervision, right_supervision, effect)
+                            ] = {
+                                (row["training_seed"], row["generation_seed"]): row["values"]
+                                for row in rows
+                            }
+                            left = (
+                                matrix, "woof", ipc, visual, checkpoint_contrast, effect
+                            )
+                            right = (
+                                matrix, "nette", ipc, visual, checkpoint_contrast, effect
+                            )
+                            record_interaction(
+                                "checkpoint_by_dataset_interaction",
+                                f"{checkpoint_contrast}__woof_minus_nette",
+                                left, right, rows,
+                            )
+
+                    for spec in ("nette", "woof"):
+                        current_key = (
+                            matrix, spec, ipc, "strength_0.9", left_supervision,
+                            right_supervision, effect,
+                        )
+                        reference_key = (
+                            matrix, spec, ipc, "strength_0.7", left_supervision,
+                            right_supervision, effect,
+                        )
+                        rows = paired_effect_interaction(
+                            checkpoint_boundary_effects.get(current_key, {}),
+                            checkpoint_boundary_effects.get(reference_key, {}),
+                        )
+                        if rows:
+                            heterogeneity_strength[
+                                (matrix, spec, ipc, left_supervision, right_supervision, effect)
+                            ] = {
+                                (row["training_seed"], row["generation_seed"]): row["values"]
+                                for row in rows
+                            }
+                            left = (
+                                matrix, spec, ipc, "strength_0.9", checkpoint_contrast, effect
+                            )
+                            right = (
+                                matrix, spec, ipc, "strength_0.7", checkpoint_contrast, effect
+                            )
+                            record_interaction(
+                                "checkpoint_by_strength_interaction",
+                                f"{checkpoint_contrast}__strength_0.9_minus_strength_0.7",
+                                left, right, rows,
+                            )
+
+                    current = heterogeneity_dataset.get((
+                        matrix, ipc, "strength_0.9", left_supervision,
+                        right_supervision, effect,
+                    ), {})
+                    reference = heterogeneity_dataset.get((
+                        matrix, ipc, "strength_0.7", left_supervision,
+                        right_supervision, effect,
+                    ), {})
+                    rows = paired_effect_interaction(current, reference)
+                    if rows:
+                        joint_spec = "woof-minus-nette"
+                        left = (
+                            matrix, joint_spec, ipc, "strength_0.9", checkpoint_contrast, effect
+                        )
+                        right = (
+                            matrix, joint_spec, ipc, "strength_0.7", checkpoint_contrast, effect
+                        )
+                        record_interaction(
+                            "checkpoint_by_dataset_strength_interaction",
+                            f"{checkpoint_contrast}__(woof-nette)_strength_0.9_minus_strength_0.7",
+                            left, right, rows,
+                        )
 
     # Cross-dataset generality at matched seeds/repeats. New matrices use the same
     # matrix label for both datasets; retain the historical C-Woof/D-Nette pairing.
@@ -469,6 +587,16 @@ def main():
             "checkpoint_correspondence_interaction": (
                 "(correct-shuffle shift 1)_left checkpoint minus the same effect at the right checkpoint"
             ),
+            "checkpoint_by_dataset_interaction": (
+                "(checkpoint effect)_Woof minus (checkpoint effect)_Nette"
+            ),
+            "checkpoint_by_strength_interaction": (
+                "(checkpoint effect)_strength 0.9 minus (checkpoint effect)_strength 0.7"
+            ),
+            "checkpoint_by_dataset_strength_interaction": (
+                "[(checkpoint effect)_Woof-(checkpoint effect)_Nette]_strength 0.9 minus the same "
+                "dataset contrast at strength 0.7"
+            ),
         },
         "bootstrap_order": "training seed -> generation seed -> paired classifier repeat",
         "formal_interaction_bootstrap_unit": (
@@ -526,6 +654,19 @@ def main():
     write_csv(
         output / "checkpoint_statistical_boundaries.csv", checkpoint_boundaries, formal_fields
     )
+    checkpoint_heterogeneity = [
+        row for row in formal_interactions
+        if row["analysis"] in {
+            "checkpoint_by_dataset_interaction",
+            "checkpoint_by_strength_interaction",
+            "checkpoint_by_dataset_strength_interaction",
+        }
+    ]
+    write_csv(
+        output / "checkpoint_heterogeneity_interactions.csv",
+        checkpoint_heterogeneity,
+        formal_fields,
+    )
     write_csv(output / "incomplete_cells.csv", incomplete, (
         "matrix", "spec", "ipc", "visual", "supervision", "training_seed", "generation_seed",
         "prompt", "shuffle_shift", "evaluation_log", "reason",
@@ -536,6 +677,9 @@ def main():
     )
     plot_checkpoint_boundaries(
         checkpoint_boundaries, output / "checkpoint_statistical_boundaries.png"
+    )
+    plot_checkpoint_heterogeneity(
+        checkpoint_heterogeneity, output / "checkpoint_heterogeneity_interactions.png"
     )
     print(json.dumps({
         "performance_rows": len(performance), "contrast_rows": len(contrasts),
@@ -674,6 +818,67 @@ def plot_checkpoint_boundaries(rows, destination):
         if selected:
             axis.legend(fontsize=6)
     figure.suptitle("Checkpoint statistical boundaries")
+    figure.tight_layout()
+    figure.savefig(destination, dpi=180)
+    plt.close(figure)
+
+
+def plot_checkpoint_heterogeneity(rows, destination):
+    import matplotlib.pyplot as plt
+
+    figure, axes = plt.subplots(1, 3, figsize=(18, 5), squeeze=False)
+    panels = (
+        ("checkpoint_by_dataset_interaction", "Dataset heterogeneity"),
+        ("checkpoint_by_strength_interaction", "Strength heterogeneity"),
+        ("checkpoint_by_dataset_strength_interaction", "Dataset x strength heterogeneity"),
+    )
+    for axis, (analysis, title) in zip(axes[0], panels):
+        selected = [row for row in rows if row["analysis"] == analysis]
+        if analysis == "checkpoint_by_dataset_interaction":
+            category = lambda row: row["visual"]
+            category_order = _visual_order
+        elif analysis == "checkpoint_by_strength_interaction":
+            category = lambda row: row["spec_left"]
+            category_order = str
+        else:
+            category = lambda row: row["contrast"].split("__", 1)[0]
+            category_order = str
+        categories = sorted({category(row) for row in selected}, key=category_order)
+        positions = {value: index for index, value in enumerate(categories)}
+        grouped = _group(
+            selected,
+            lambda row: (
+                row["matrix_left"], row["ipc"], row["effect"],
+                row["contrast"].split("__", 1)[0],
+            ),
+        )
+        for key, group in grouped.items():
+            group = sorted(group, key=lambda row: positions[category(row)])
+            x = [positions[category(row)] for row in group]
+            y = [row["mean"] for row in group]
+            lower = [row["hierarchical_bootstrap_ci_lower"] for row in group]
+            upper = [row["hierarchical_bootstrap_ci_upper"] for row in group]
+            axis.errorbar(
+                x, y,
+                yerr=(
+                    [center - bound for center, bound in zip(y, lower)],
+                    [bound - center for center, bound in zip(y, upper)],
+                ),
+                marker="o", capsize=3,
+                label=f"{key[0]} IPC{key[1]} {key[2]} {key[3]}",
+            )
+        axis.axhline(0, color="black", linestyle="--", linewidth=1)
+        axis.set_title(title)
+        axis.set_ylabel("Paired higher-order interaction")
+        tick_labels = [
+            _visual_tick(value) if str(value).startswith("strength_") else str(value)
+            for value in categories
+        ]
+        axis.set_xticks(range(len(categories)), tick_labels, rotation=15)
+        axis.grid(alpha=0.25)
+        if selected:
+            axis.legend(fontsize=6)
+    figure.suptitle("Checkpoint-effect heterogeneity boundaries")
     figure.tight_layout()
     figure.savefig(destination, dpi=180)
     plt.close(figure)

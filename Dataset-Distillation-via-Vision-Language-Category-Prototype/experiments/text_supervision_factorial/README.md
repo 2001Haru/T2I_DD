@@ -371,8 +371,8 @@ bash experiments/text_supervision_factorial/run_schedule_matched_followup.sh
 They are intentionally separate because the completed Woof checkpoints live
 under `conditioning_interface_generality_v0`, not the earlier `abc_v0` run.
 
-After completing the original Matched-FT run, the default new run ID
-`schedule_matched_checkpoint_v1` automatically reuses
+After completing the original Matched-FT run, the default covariance run ID
+`prototype_checkpoint_covariance_v0` automatically reuses
 `schedule_matched_followup_v0/evaluation_index.json` and only schedules the
 missing Label-FT cells. Set `SUPERVISIONS=label_ft` to make that incremental
 intent explicit. The summary now derives matrix panels dynamically, so E/F/R
