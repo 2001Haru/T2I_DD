@@ -33,12 +33,12 @@ class ScheduleMatchedFollowupTests(unittest.TestCase):
                 artifact_root.mkdir(parents=True)
                 (artifact_root / f"{name}-ipc50-0.7-30-kmexpand1.json").write_text("{}", encoding="utf-8")
                 (artifact_root / "dcs.json").write_text("{}", encoding="utf-8")
-            for supervision in ("label_ft", "matched_ft"):
+            for supervision in ("label_ft", "unpaired_ft", "matched_ft"):
                 write_model(base / "models" / supervision)
                 for seed in (0, 1):
                     write_model(causal / "models" / f"train_seed_{seed}" / supervision)
             for seed in (0, 1):
-                for supervision in ("label_ft", "matched_ft"):
+                for supervision in ("label_ft", "unpaired_ft", "matched_ft"):
                     write_model(interface / "models" / "woof" / f"train_seed_{seed}" / supervision)
             args = Namespace(
                 nette_data_root=str(root / "nette"), woof_data_root=str(root / "woof"),
@@ -62,6 +62,16 @@ class ScheduleMatchedFollowupTests(unittest.TestCase):
             tasks, index = build_tasks(args, {})
             self.assertEqual(len(index), 96)
             self.assertEqual(len(tasks), 144)
+
+            args.matrices = ("R",)
+            args.supervisions = ("label_ft", "unpaired_ft")
+            tasks, index = build_tasks(args, {})
+            self.assertEqual(len(index), 96)
+            self.assertEqual(len(tasks), 128)
+            self.assertEqual({row["matrix"] for row in index}, {"R"})
+            self.assertEqual({row["visual_mode"] for row in index}, {"prototype"})
+            self.assertEqual({row["strength"] for row in index}, {0.7, 0.9})
+            self.assertEqual({row["supervision"] for row in index}, {"label_ft", "unpaired_ft"})
 
 
 if __name__ == "__main__":

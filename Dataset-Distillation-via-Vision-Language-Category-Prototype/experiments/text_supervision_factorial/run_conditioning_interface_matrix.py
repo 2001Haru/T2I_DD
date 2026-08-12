@@ -174,7 +174,10 @@ def add_generation(tasks, index, args, reuse, matrix, spec, data_root, ipc, prot
         }
         reused = reuse.get(cell_key(metadata))
         if reused:
-            index.append({**metadata, "evaluation_log": reused["evaluation_log"], "source": "reused"})
+            retained = {"evaluation_log": reused["evaluation_log"]}
+            if reused.get("synthetic_dir"):
+                retained["synthetic_dir"] = reused["synthetic_dir"]
+            index.append({**metadata, **retained, "source": "reused"})
         else:
             missing.append(prompt)
     if not missing:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the schedule-matched visual-content control and IPC50 pure-noise endpoint."""
+"""Run targeted IPC50 checkpoint-by-visual-interface follow-up matrices."""
 
 import argparse
 import json
@@ -48,8 +48,12 @@ def parse_args():
     parser.add_argument("--training-seeds", type=int, nargs="+", default=(0, 1))
     parser.add_argument("--generation-seeds", type=int, nargs="+", default=(0, 1))
     parser.add_argument(
-        "--supervisions", nargs="+", choices=("label_ft", "matched_ft"),
+        "--supervisions", nargs="+", choices=("label_ft", "unpaired_ft", "matched_ft"),
         default=("label_ft", "matched_ft"),
+    )
+    parser.add_argument(
+        "--matrices", nargs="+", choices=("E", "F", "R"), default=("E", "F"),
+        help="E=schedule-matched noise, F=pure noise, R=prototype initialization",
     )
     parser.add_argument("--gpus", default="0,1,2,3")
     parser.add_argument("--classifier-repeats", type=int, default=2)
@@ -112,6 +116,7 @@ def add_reference_rows(index, reuse, spec, training_seed, generation_seed):
 
 def build_tasks(args, reuse):
     tasks, index = {}, []
+    matrices = tuple(getattr(args, "matrices", ("E", "F")))
     roots = {
         "nette": Path(args.nette_data_root).resolve(),
         "woof": Path(args.woof_data_root).resolve(),
@@ -128,29 +133,45 @@ def build_tasks(args, reuse):
                 if not complete_model(model)():
                     raise RuntimeError(f"Missing {supervision} checkpoint: {model}")
                 for generation_seed in args.generation_seeds:
-                    if supervision == "matched_ft":
-                        add_reference_rows(index, reuse, spec, training_seed, generation_seed)
-                    for strength in NEW_STRENGTHS:
+                    if "E" in matrices:
+                        for strength in NEW_STRENGTHS:
+                            add_prompt_grid(
+                                tasks, index, args, reuse, "E", spec, roots[spec], 50,
+                                prototype, dcs, model, supervision, training_seed,
+                                generation_seed, strength, "schedule_matched_noise",
+                                stage=1, phase="schedule_matched_content_control",
+                            )
+                    if "F" in matrices:
                         add_prompt_grid(
-                            tasks, index, args, reuse, "E", spec, roots[spec], 50,
+                            tasks, index, args, reuse, "F", spec, roots[spec], 50,
                             prototype, dcs, model, supervision, training_seed,
-                            generation_seed, strength, "schedule_matched_noise",
-                            stage=1, phase="schedule_matched_content_control",
+                            generation_seed, None, "pure_noise", extra_shifts=(2, 4, 7),
+                            stage=2, phase="pure_noise_ipc50_endpoint",
                         )
-                    add_prompt_grid(
-                        tasks, index, args, reuse, "F", spec, roots[spec], 50,
-                        prototype, dcs, model, supervision, training_seed,
-                        generation_seed, None, "pure_noise", extra_shifts=(2, 4, 7),
-                        stage=2, phase="pure_noise_ipc50_endpoint",
-                    )
+                    if "R" in matrices:
+                        for strength in NEW_STRENGTHS:
+                            add_prompt_grid(
+                                tasks, index, args, reuse, "R", spec, roots[spec], 50,
+                                prototype, dcs, model, supervision, training_seed,
+                                generation_seed, strength, "prototype",
+                                stage=3, phase="prototype_checkpoint_control",
+                            )
     return tasks, index
 
 
 def write_manifest(args, index):
     root = Path(args.run_root).resolve()
+    matrices = list(getattr(args, "matrices", ("E", "F")))
+    question = (
+        "Separate rich-caption marginal supervision from training-time matching covariance "
+        "under prototype initialization"
+        if matrices == ["R"]
+        else "Separate prototype content from the shortened img2img schedule"
+    )
     payload = {
         "format_version": 1,
-        "question": "Separate prototype content from the shortened img2img schedule",
+        "question": question,
+        "matrices": matrices,
         "ipc": 50,
         "specs": list(args.specs),
         "schedule_matched_strengths": list(NEW_STRENGTHS),
@@ -159,6 +180,13 @@ def write_manifest(args, index):
         "training_seeds": list(args.training_seeds),
         "generation_seeds": list(args.generation_seeds),
         "supervisions": list(args.supervisions),
+        "preregistered_checkpoint_contrasts": [
+            "unpaired_ft_minus_label_ft: rich-caption marginal supervision",
+            "matched_ft_minus_unpaired_ft: training-time image-caption covariance",
+        ],
+        "preregistered_inference_contrast": (
+            "correct_minus_shuffled: inference-time cluster correspondence"
+        ),
         "classifier_repeats": args.classifier_repeats,
         "gpus": args.gpus,
         "base_model": str(Path(args.base_model).resolve()),

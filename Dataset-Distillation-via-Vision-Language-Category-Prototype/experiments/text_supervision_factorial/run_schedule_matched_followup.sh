@@ -50,6 +50,7 @@ python "$EXPERIMENT_DIR/run_schedule_matched_followup.py" \
   --causal-run-root "$CAUSAL_RUN_ROOT" --generality-run-root "$GENERALITY_RUN_ROOT" \
   --interface-run-root "$INTERFACE_RUN_ROOT" --woof-model-root "$WOOF_MODEL_ROOT" \
   --run-root "$RUN_ROOT" \
+  --matrices ${MATRICES:-E F} \
   --supervisions ${SUPERVISIONS:-label_ft matched_ft} \
   --gpus "$GPU_IDS" --classifier-repeats "${CLASSIFIER_REPEATS:-2}" \
   --max-parallel-evals "${MAX_PARALLEL_EVALS:-4}" \
