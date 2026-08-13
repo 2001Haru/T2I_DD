@@ -427,8 +427,9 @@ nohup bash experiments/text_supervision_factorial/run_sparse_checkpoint_controls
 
 The runner first writes `checkpoint_protocol_audit.json` and refuses to start
 generation if the historical checkpoint summaries or normalized Diffusers
-component configurations disagree. It then evaluates every checkpoint with
-the same ImageNette IPC50 prototype, strength 0.8, generation seeds, Label
-prompt, and classifier protocol used by the sparse search. Its summary joins
-the existing Sparse-FT results and reports Sparse-FT minus each control with
-checkpoint realizations bootstrapped independently.
+component configurations disagree. It audits all four causal-ladder
+checkpoints, but only generates the missing Empty-FT, Label-FT, and Unpaired-FT
+Label controls. Matched-FT is not regenerated because Matrix D already contains
+the exact ImageNette IPC50, strength 0.8 endpoint. The summary joins the new
+controls with the existing Sparse-FT results and bootstraps their checkpoint
+realizations independently.

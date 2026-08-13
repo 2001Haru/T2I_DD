@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 
 
 RESULT = re.compile(r"Best, last acc:----(\[[^\]]+\])")
-SUPERVISIONS = ("empty_ft", "label_ft", "unpaired_ft", "matched_ft")
+SUPERVISIONS = ("empty_ft", "label_ft", "unpaired_ft")
 
 
 def parse_args():
@@ -158,7 +158,7 @@ def main():
     contrasts = []
     for budget in sorted({row["budget"] for row in sparse}):
         sparse_rows = [row for row in sparse if row["budget"] == budget]
-        for supervision in ("empty_ft", "label_ft", "unpaired_ft", "matched_ft"):
+        for supervision in SUPERVISIONS:
             control_rows = [row for row in controls if row["supervision"] == supervision]
             mean, lower, upper = independent_checkpoint_contrast(
                 sparse_rows, control_rows, args.bootstrap_samples,
@@ -194,7 +194,7 @@ def main():
     }
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
-    order = ("empty_ft", "label_ft", "unpaired_ft", "matched_ft", "sparse_m4", "sparse_m8", "sparse_m16", "sparse_m32")
+    order = ("empty_ft", "label_ft", "unpaired_ft", "sparse_m4", "sparse_m8", "sparse_m16", "sparse_m32")
     lookup = {row["method"]: row for row in performance}
     rows = [lookup[key] for key in order if key in lookup]
     fig, axis = plt.subplots(figsize=(12, 5.5))

@@ -11,7 +11,7 @@ sys.path.insert(0, str(HERE))
 from run_sparse_checkpoint_controls import (  # noqa: E402
     CONFIG_FILES,
     SUMMARY_SUPERVISION,
-    SUPERVISIONS,
+    AUDIT_SUPERVISIONS,
     audit_checkpoints,
     build_tasks,
     checkpoint_path,
@@ -46,7 +46,7 @@ class SparseCheckpointControlTests(unittest.TestCase):
 
     def populate(self, args):
         for seed in args.training_seeds:
-            for supervision in SUPERVISIONS:
+            for supervision in AUDIT_SUPERVISIONS:
                 write_checkpoint(checkpoint_path(args, supervision, seed), supervision, seed)
 
     def test_checkpoint_paths_follow_historical_layout(self):
@@ -72,10 +72,10 @@ class SparseCheckpointControlTests(unittest.TestCase):
             self.assertEqual(len(records), 8)
             self.assertEqual(json.loads(report.read_text())["status"], "pass")
             tasks, index = build_tasks(args)
-            self.assertEqual(len(tasks), 32)
-            self.assertEqual(len(index), 16)
-            self.assertEqual(sum(task.kind == "generate" for task in tasks.values()), 16)
-            self.assertEqual(sum(task.kind == "eval" for task in tasks.values()), 16)
+            self.assertEqual(len(tasks), 24)
+            self.assertEqual(len(index), 12)
+            self.assertEqual(sum(task.kind == "generate" for task in tasks.values()), 12)
+            self.assertEqual(sum(task.kind == "eval" for task in tasks.values()), 12)
             self.assertFalse(any(task.kind == "train" for task in tasks.values()))
 
     def test_audit_rejects_protocol_mismatch(self):

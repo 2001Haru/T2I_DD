@@ -23,7 +23,8 @@ from run_sparse_prompt_search import (
 
 
 HERE = Path(__file__).resolve().parent
-SUPERVISIONS = ("empty_ft", "label_ft", "unpaired_ft", "matched_ft")
+AUDIT_SUPERVISIONS = ("empty_ft", "label_ft", "unpaired_ft", "matched_ft")
+EVALUATED_SUPERVISIONS = ("empty_ft", "label_ft", "unpaired_ft")
 SUMMARY_SUPERVISION = {
     "empty_ft": "empty",
     "label_ft": "label",
@@ -95,7 +96,7 @@ def audit_checkpoints(args, output):
     errors = []
     reference = {}
     for training_seed in sorted(set(args.training_seeds)):
-        for supervision in SUPERVISIONS:
+        for supervision in AUDIT_SUPERVISIONS:
             model = checkpoint_path(args, supervision, training_seed)
             summary_path = model / "training_summary.json"
             if not (model / "model_index.json").is_file() or not summary_path.is_file():
@@ -186,7 +187,7 @@ def build_tasks(args):
     tasks = {}
     index = []
     for training_seed in sorted(set(args.training_seeds)):
-        for supervision in SUPERVISIONS:
+        for supervision in EVALUATED_SUPERVISIONS:
             model = checkpoint_path(args, supervision, training_seed)
             for generation_seed in sorted(set(args.generation_seeds)):
                 token = f"{supervision}_t{training_seed}_g{generation_seed}"
@@ -294,7 +295,8 @@ def main():
         "sparse_run_root": str(Path(args.sparse_run_root).resolve()),
         "prototype": str(Path(args.prototype).resolve()),
         "dcs": str(Path(args.dcs).resolve()),
-        "supervisions": list(SUPERVISIONS),
+        "audited_supervisions": list(AUDIT_SUPERVISIONS),
+        "evaluated_supervisions": list(EVALUATED_SUPERVISIONS),
         "training_seeds": sorted(set(args.training_seeds)),
         "generation_seeds": sorted(set(args.generation_seeds)),
         "ipc": args.ipc,
