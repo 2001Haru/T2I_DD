@@ -42,6 +42,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-root", required=True)
     parser.add_argument("--caption-file", required=True)
+    parser.add_argument("--spec", choices=("nette", "woof"), default="nette")
     parser.add_argument("--base-model", required=True)
     parser.add_argument("--prototype", required=True)
     parser.add_argument("--dcs", required=True)
@@ -51,6 +52,7 @@ def parse_args():
     parser.add_argument("--bank-seeds", type=int, nargs="+", default=(0, 1))
     parser.add_argument("--training-seed", type=int, default=0)
     parser.add_argument("--generation-seeds", type=int, nargs="+", default=(0, 1))
+    parser.add_argument("--prompts", nargs="+", choices=("label", "bank"), default=("label", "bank"))
     parser.add_argument("--ipc", type=int, default=50)
     parser.add_argument("--strength", type=float, default=0.8)
     parser.add_argument("--classifier-repeats", type=int, default=2)
@@ -73,9 +75,10 @@ def complete_eval(path):
     return lambda: path.is_file() and bool(RESULT.search(path.read_text(encoding="utf-8", errors="replace")))
 
 
-def complete_generation(root, expected):
+def complete_generation(root, expected, prompts):
     def check():
-        for condition in ("sparse_ft_label", "sparse_ft_bank"):
+        for prompt in prompts:
+            condition = f"sparse_ft_{prompt}"
             complete = root / condition / "complete.json"
             if not complete.is_file():
                 return False
@@ -110,11 +113,12 @@ def train_command(args, bank, output):
 
 
 def generation_command(args, bank, model, output, generation_seed):
+    prompts = getattr(args, "prompts", ("label", "bank"))
     return [
         sys.executable, str(HERE / "generate_factorial.py"),
         "--prototype", args.prototype, "--dcs", args.dcs, "--base-model", args.base_model,
         "--model", f"sparse_ft={model}", "--supervisions", "sparse_ft",
-        "--prompts", "label", "bank", "--prompt-bank", str(bank),
+        "--prompts", *prompts, "--prompt-bank", str(bank),
         "--output-root", str(output), "--generation-seeds", str(generation_seed),
         "--ipc", str(args.ipc), "--strength", str(args.strength),
         "--guidance-scale", "10", "--num-inference-steps", "50", "--shuffle-shift", "1",
@@ -128,12 +132,13 @@ def eval_command(args, synthetic, tag):
         str(synthetic), str(Path(args.data_root).resolve()), "-n", "resnet_ap",
         "--nclass", "10", "--norm_type", "instance", "--ipc", str(args.ipc),
         "--tag", tag, "--slct_type", "random", "--repeat", str(args.classifier_repeats),
-        "--spec", "nette", "--seed", str(args.classifier_seed),
+        "--spec", getattr(args, "spec", "nette"), "--seed", str(args.classifier_seed),
     ]
 
 
 def build_tasks(args):
     root = Path(args.run_root).resolve()
+    prompts = getattr(args, "prompts", ("label", "bank"))
     tasks, index = {}, []
     for bank_seed in sorted(set(args.bank_seeds)):
         for budget in sorted(set(args.budgets)):
@@ -153,9 +158,9 @@ def build_tasks(args):
                     gen_name, 2, "generate",
                     generation_command(args, bank, model, output, generation_seed), REPO_ROOT,
                     root / "scheduler_logs" / f"{gen_name}.log",
-                    complete_generation(seed_root, 10 * args.ipc), dependencies=(train_name,),
+                    complete_generation(seed_root, 10 * args.ipc, prompts), dependencies=(train_name,),
                 )
-                for prompt in ("label", "bank"):
+                for prompt in prompts:
                     condition = f"sparse_ft_{prompt}"
                     eval_name = f"eval_{token}_g{generation_seed}_{prompt}"
                     log = root / "evaluation" / f"bank_seed_{bank_seed}" / f"m_{budget}" / f"seed_{generation_seed}" / f"{condition}.log"
@@ -169,6 +174,7 @@ def build_tasks(args):
                         "training_seed": args.training_seed,
                         "generation_seed": generation_seed,
                         "prompt": prompt, "ipc": args.ipc, "strength": args.strength,
+                        "spec": getattr(args, "spec", "nette"),
                         "evaluation_log": str(log),
                     })
     return tasks, index
@@ -236,6 +242,7 @@ def main():
         "experiment": "random_sparse_unpaired_caption_marginal",
         "data_root": str(Path(args.data_root).resolve()),
         "caption_file": str(Path(args.caption_file).resolve()),
+        "spec": args.spec,
         "base_model": str(Path(args.base_model).resolve()),
         "prototype": str(Path(args.prototype).resolve()),
         "dcs": str(Path(args.dcs).resolve()),
@@ -243,6 +250,7 @@ def main():
         "bank_seeds": sorted(set(args.bank_seeds)),
         "training_seed": args.training_seed,
         "generation_seeds": list(args.generation_seeds),
+        "prompts": list(args.prompts),
         "ipc": args.ipc, "strength": args.strength,
         "classifier_repeats": args.classifier_repeats,
         "no_walltime_limit": True,
