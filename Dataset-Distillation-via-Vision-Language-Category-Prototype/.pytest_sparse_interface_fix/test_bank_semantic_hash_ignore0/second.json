@@ -1,0 +1,1 @@
+{"format_version": 1, "maximum_nested_budget": 4, "caption_file": "/new/path/nette.jsonl", "classes": {"n00000001": [{"relative": "n00000001/a.jpg", "caption": "caption a", "nested_rank": 0}, {"relative": "n00000001/b.jpg", "caption": "caption b", "nested_rank": 1}]}}

@@ -23,6 +23,27 @@ def test_reuse_key_normalizes_legacy_prompt_names():
     assert runner.reuse_key(row) == ("matched_ft", 1, 0, "shuffled")
 
 
+def test_bank_semantic_hash_ignores_build_only_metadata(tmp_path):
+    classes = {
+        "n00000001": [
+            {"relative": "n00000001/a.jpg", "caption": "caption a", "nested_rank": 0},
+            {"relative": "n00000001/b.jpg", "caption": "caption b", "nested_rank": 1},
+        ]
+    }
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    first.write_text(json.dumps({
+        "format_version": 1, "maximum_nested_budget": 32,
+        "caption_file": "/old/path/nette.jsonl", "classes": classes,
+    }), encoding="utf-8")
+    second.write_text(json.dumps({
+        "format_version": 1, "maximum_nested_budget": 4,
+        "caption_file": "/new/path/nette.jsonl", "classes": classes,
+    }), encoding="utf-8")
+    assert runner.sha256(first) != runner.sha256(second)
+    assert runner.bank_semantic_sha256(first) == runner.bank_semantic_sha256(second)
+
+
 def test_gap_decomposition_closes(tmp_path, monkeypatch):
     means = {
         ("sparse_m4_ft", "label"): 78.80,

@@ -25,12 +25,13 @@ def parse_args():
     parser.add_argument("--base-model", required=True)
     parser.add_argument("--prototype", required=True)
     parser.add_argument("--dcs", required=True)
-    parser.add_argument("--prompt-bank", required=True)
+    parser.add_argument("--prompt-bank", default="", help="Legacy fallback bank for every training seed")
+    parser.add_argument("--sparse-seed0-bank", default="")
+    parser.add_argument("--sparse-seed1-bank", default="")
     parser.add_argument("--sparse-seed0-model", required=True)
     parser.add_argument("--sparse-seed1-model", required=True)
     parser.add_argument("--matched-seed0-model", required=True)
     parser.add_argument("--matched-seed1-model", required=True)
-    parser.add_argument("--bank-copy", action="append", default=[])
     parser.add_argument("--reuse-index", action="append", default=[])
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--gpus", default="0,1")
@@ -65,8 +66,43 @@ def checkpoint_identity(path):
     return identity
 
 
+def bank_semantic_payload(path):
+    """Return only prompt-bank content that can affect conditioning."""
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    classes = payload.get("classes")
+    if not isinstance(classes, dict) or not classes:
+        raise ValueError(f"Invalid sparse prompt bank: {path}")
+    normalized = {}
+    for class_key, rows in sorted(classes.items()):
+        normalized[class_key] = [
+            {
+                "relative": str(row.get("relative", "")),
+                "caption": str(row.get("caption", "")),
+                "nested_rank": int(row.get("nested_rank", rank)),
+            }
+            for rank, row in enumerate(rows)
+        ]
+    return normalized
+
+
+def bank_semantic_sha256(path):
+    encoded = json.dumps(
+        bank_semantic_payload(path), ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def model_path(args, family, seed):
     return Path(getattr(args, f"{family.split('_')[0]}_seed{seed}_model")).resolve()
+
+
+def prompt_bank_path(args, seed):
+    explicit = getattr(args, f"sparse_seed{seed}_bank", "")
+    selected = explicit or args.prompt_bank
+    if not selected:
+        raise ValueError(f"No sparse m4 prompt bank configured for training seed {seed}")
+    return Path(selected).resolve()
 
 
 def condition(family, prompt):
@@ -129,14 +165,14 @@ def load_reuse(paths):
     return catalog
 
 
-def generation_command(args, family, model, output, generation_seed, prompts):
+def generation_command(args, family, model, prompt_bank, output, generation_seed, prompts):
     supervision = "sparse_ft" if family == "sparse_m4_ft" else "matched_ft"
     return [
         sys.executable, str(HERE / "generate_factorial.py"),
         "--prototype", args.prototype, "--dcs", args.dcs,
         "--base-model", args.base_model, "--model", f"{supervision}={model}",
         "--supervisions", supervision, "--prompts", *prompts,
-        "--prompt-bank", args.prompt_bank, "--output-root", str(output),
+        "--prompt-bank", str(prompt_bank), "--output-root", str(output),
         "--generation-seeds", str(generation_seed), "--ipc", str(args.ipc),
         "--strength", str(args.strength), "--guidance-scale", str(args.guidance_scale),
         "--num-inference-steps", str(args.num_inference_steps), "--shuffle-shift", "1",
@@ -150,6 +186,7 @@ def build_tasks(args, reuse):
     for family in FAMILIES:
         for training_seed in sorted(set(args.training_seeds)):
             model = model_path(args, family, training_seed)
+            prompt_bank = prompt_bank_path(args, training_seed)
             for generation_seed in sorted(set(args.generation_seeds)):
                 missing = []
                 for prompt in PROMPTS:
@@ -172,7 +209,9 @@ def build_tasks(args, reuse):
                 gen_name = f"gen_{token}_{'-'.join(missing)}"
                 tasks[gen_name] = Task(
                     gen_name, 1, "generate",
-                    generation_command(args, family, model, output, generation_seed, missing),
+                    generation_command(
+                        args, family, model, prompt_bank, output, generation_seed, missing
+                    ),
                     REPO_ROOT, root / "scheduler_logs" / f"{gen_name}.log",
                     complete_generation(seed_root, family, missing, 10 * args.ipc),
                 )
@@ -243,15 +282,21 @@ def main():
     args = parse_args()
     if hasattr(signal, "SIGHUP"):
         signal.signal(signal.SIGHUP, signal.SIG_IGN)
-    required = [args.data_root, args.base_model, args.prototype, args.dcs, args.prompt_bank]
+    required = [args.data_root, args.base_model, args.prototype, args.dcs]
     required += [str(model_path(args, family, seed)) for family in FAMILIES for seed in args.training_seeds]
+    required += [str(prompt_bank_path(args, seed)) for seed in args.training_seeds]
     for path in required:
         if not Path(path).exists():
             raise FileNotFoundError(path)
-    canonical_hash = sha256(args.prompt_bank)
-    mismatched = [path for path in args.bank_copy if sha256(path) != canonical_hash]
-    if mismatched:
-        raise RuntimeError(f"Sparse m4 banks differ from canonical bank: {mismatched}")
+    bank_semantic_hashes = {
+        seed: bank_semantic_sha256(prompt_bank_path(args, seed))
+        for seed in sorted(set(args.training_seeds))
+    }
+    if len(set(bank_semantic_hashes.values())) != 1:
+        raise RuntimeError(
+            "Sparse m4 banks differ in selected class-caption content: "
+            + json.dumps(bank_semantic_hashes, sort_keys=True)
+        )
     root = Path(args.run_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
     reuse = load_reuse(args.reuse_index)
@@ -261,16 +306,20 @@ def main():
         "data_root": str(Path(args.data_root).resolve()), "base_model": str(Path(args.base_model).resolve()),
         "prototype": str(Path(args.prototype).resolve()), "prototype_sha256": sha256(args.prototype),
         "dcs": str(Path(args.dcs).resolve()), "dcs_sha256": sha256(args.dcs),
-        "prompt_bank": str(Path(args.prompt_bank).resolve()), "prompt_bank_sha256": canonical_hash,
+        "prompt_banks": {
+            str(seed): {
+                "path": str(prompt_bank_path(args, seed)),
+                "file_sha256": sha256(prompt_bank_path(args, seed)),
+                "semantic_sha256": bank_semantic_hashes[seed],
+            }
+            for seed in sorted(set(args.training_seeds))
+        },
         "training_seeds": sorted(set(args.training_seeds)), "generation_seeds": sorted(set(args.generation_seeds)),
         "ipc": args.ipc, "strength": args.strength, "prompts": list(PROMPTS),
         "classifier_repeats": args.classifier_repeats,
         "classifier_seed": args.classifier_seed,
         "guidance_scale": args.guidance_scale,
         "num_inference_steps": args.num_inference_steps,
-        "prompt_bank_copies": [
-            {"path": str(Path(path).resolve()), "sha256": sha256(path)} for path in args.bank_copy
-        ],
         "checkpoint_models": {
             f"{family}_seed{seed}": checkpoint_identity(model_path(args, family, seed))
             for family in FAMILIES for seed in args.training_seeds
