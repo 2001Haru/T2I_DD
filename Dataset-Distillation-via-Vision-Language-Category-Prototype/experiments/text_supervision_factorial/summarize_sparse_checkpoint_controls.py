@@ -99,6 +99,44 @@ def independent_checkpoint_contrast(sparse_rows, control_rows, samples, seed):
     return point, percentile(estimates, 0.025), percentile(estimates, 0.975)
 
 
+def paired_prompt_contrast(bank_rows, label_rows, samples, seed):
+    bank = {
+        (row["bank_seed"], row["generation_seed"]): row["scores"]
+        for row in bank_rows
+    }
+    label = {
+        (row["bank_seed"], row["generation_seed"]): row["scores"]
+        for row in label_rows
+    }
+    keys = sorted(set(bank) & set(label))
+    if set(bank) != set(label):
+        raise ValueError("Sparse Bank and Label rows do not have identical paired cells")
+    paired = []
+    for key in keys:
+        if len(bank[key]) != len(label[key]):
+            raise ValueError(f"Classifier-repeat mismatch for sparse prompt pair {key}")
+        paired.append((key, [left - right for left, right in zip(bank[key], label[key])]))
+    by_bank = {}
+    for (bank_seed, generation_seed), differences in paired:
+        by_bank.setdefault(bank_seed, {})[generation_seed] = differences
+    rng = random.Random(seed)
+    bank_seeds = sorted(by_bank)
+    estimates = []
+    for _ in range(samples):
+        values = []
+        for _ in bank_seeds:
+            bank_seed = rng.choice(bank_seeds)
+            generations = by_bank[bank_seed]
+            generation_seeds = sorted(generations)
+            for _ in generation_seeds:
+                generation_seed = rng.choice(generation_seeds)
+                repeats = generations[generation_seed]
+                values.extend(rng.choice(repeats) for _ in repeats)
+        estimates.append(statistics.fmean(values))
+    point = statistics.fmean(value for _, values in paired for value in values)
+    return point, percentile(estimates, 0.025), percentile(estimates, 0.975)
+
+
 def write_csv(path, rows):
     with Path(path).open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
@@ -113,10 +151,12 @@ def main():
     control_index = json.loads(Path(args.control_index).read_text(encoding="utf-8"))
     sparse_index = json.loads(Path(args.sparse_index).read_text(encoding="utf-8"))
     controls = [{**row, "scores": scores(row["evaluation_log"])} for row in control_index]
-    sparse = [
+    sparse_all = [
         {**row, "scores": scores(row["evaluation_log"])}
-        for row in sparse_index if row["prompt"] == "bank"
+        for row in sparse_index
     ]
+    sparse = [row for row in sparse_all if row["prompt"] == "label"]
+    sparse_bank = [row for row in sparse_all if row["prompt"] == "bank"]
 
     performance = []
     for supervision in sorted({row["supervision"] for row in controls}):
@@ -133,6 +173,7 @@ def main():
                 "unpaired_ft": "full_unpaired",
                 "matched_ft": "full_matched",
             }[supervision],
+            "inference_prompt": "label",
             "mean_accuracy": statistics.fmean([value for row in selected for value in row["scores"]]),
             "bootstrap_ci_lower": lower,
             "bootstrap_ci_upper": upper,
@@ -148,6 +189,7 @@ def main():
             "family": "sparse_unpaired",
             "method": f"sparse_m{budget}",
             "caption_budget": budget,
+            "inference_prompt": "label",
             "mean_accuracy": statistics.fmean([value for row in selected for value in row["scores"]]),
             "bootstrap_ci_lower": lower,
             "bootstrap_ci_upper": upper,
@@ -176,18 +218,43 @@ def main():
                 ),
             })
 
+    prompt_contrasts = []
+    for budget in sorted({row["budget"] for row in sparse}):
+        label_rows = [row for row in sparse if row["budget"] == budget]
+        bank_rows = [row for row in sparse_bank if row["budget"] == budget]
+        mean, lower, upper = paired_prompt_contrast(
+            bank_rows, label_rows, args.bootstrap_samples, seed=20262000 + budget
+        )
+        prompt_contrasts.append({
+            "budget": budget,
+            "contrast": "bank_minus_label_within_sparse_checkpoint",
+            "mean_difference": mean,
+            "bootstrap_ci_lower": lower,
+            "bootstrap_ci_upper": upper,
+            "paired_bank_generation_cells": len(label_rows),
+            "paired_classifier_observations": sum(len(row["scores"]) for row in label_rows),
+            "bootstrap_order": "bank seed -> generation seed -> paired classifier repeat",
+        })
+
+    write_csv(output / "label_inference_checkpoint_and_sparse_performance.csv", performance)
+    write_csv(output / "label_inference_sparse_vs_checkpoint_controls.csv", contrasts)
+    write_csv(output / "sparse_bank_minus_label.csv", prompt_contrasts)
+    # Compatibility aliases now point to the preregistered Label-inference analysis.
     write_csv(output / "checkpoint_and_sparse_performance.csv", performance)
     write_csv(output / "sparse_vs_checkpoint_controls.csv", contrasts)
     summary = {
         "format_version": 1,
         "performance": performance,
         "contrasts": contrasts,
+        "sparse_bank_minus_label": prompt_contrasts,
+        "primary_inference_prompt": "label",
         "primary_question": (
             "Does sparse unpaired-caption fine-tuning improve over Label-FT, and how much of the "
             "full Unpaired-FT checkpoint is retained?"
         ),
         "boundary": (
-            "Sparse bank seeds change caption selection while retaining training seed 0; control checkpoint "
+            "The primary comparison fixes inference to the class Label for every checkpoint. Sparse bank "
+            "seeds change caption selection while retaining training seed 0; control checkpoint "
             "seeds change optimization initialization. Contrasts therefore bootstrap the two checkpoint "
             "realization axes independently and pair only generation seed and classifier repeat."
         ),
@@ -207,7 +274,7 @@ def main():
     )
     axis.set_xticks(range(len(rows)), [row["method"] for row in rows], rotation=25, ha="right")
     axis.set_ylabel("Validation accuracy")
-    axis.set_title("Sparse caption supervision versus existing checkpoint controls")
+    axis.set_title("Sparse caption supervision under matched Label inference")
     axis.grid(axis="y", alpha=0.25)
     fig.tight_layout()
     fig.savefig(output / "sparse_checkpoint_controls.png", dpi=180)
