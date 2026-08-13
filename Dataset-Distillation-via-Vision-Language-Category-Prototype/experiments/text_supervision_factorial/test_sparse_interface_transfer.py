@@ -44,6 +44,26 @@ def test_bank_semantic_hash_ignores_build_only_metadata(tmp_path):
     assert runner.bank_semantic_sha256(first) == runner.bank_semantic_sha256(second)
 
 
+def test_attempts_survive_scheduler_restart(tmp_path):
+    task = runner.Task("generate", 1, "generate", [], tmp_path, tmp_path / "task.log", lambda: False)
+    (tmp_path / "scheduler_events.jsonl").write_text(
+        "\n".join((
+            json.dumps({"event": "launch", "task": "generate", "attempt": 1}),
+            json.dumps({"event": "failure", "task": "generate", "attempt": 1}),
+            json.dumps({"event": "launch", "task": "generate", "attempt": 2}),
+        )) + "\n",
+        encoding="utf-8",
+    )
+    runner.restore_attempt_counts(tmp_path, {task.name: task})
+    assert task.attempts == 2
+
+
+def test_returncode_reports_process_signals():
+    assert runner.decoded_returncode(-9) == "SIGKILL"
+    assert runner.decoded_returncode(137) == "SIGKILL"
+    assert runner.decoded_returncode(1) == "normal_exit"
+
+
 def test_gap_decomposition_closes(tmp_path, monkeypatch):
     means = {
         ("sparse_m4_ft", "label"): 78.80,

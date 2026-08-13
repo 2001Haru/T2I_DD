@@ -4,19 +4,130 @@
 import argparse
 import hashlib
 import json
+import os
+import shlex
 import signal
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 from run_generality import EVAL_DIR, REPO_ROOT, Task, complete_eval, eval_command
-from run_sparse_prompt_search import launch, write_state
+from run_sparse_prompt_search import write_state
 
 
 HERE = Path(__file__).resolve().parent
 PROMPTS = ("label", "correct", "shuffled", "bank")
 FAMILIES = ("sparse_m4_ft", "matched_ft")
+
+
+def append_scheduler_event(root, event, **fields):
+    """Persist scheduler lifecycle events even when a child log is archived."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "time": time.strftime("%F %T"),
+        "event": event,
+        "scheduler_pid": os.getpid(),
+        **fields,
+    }
+    with (root / "scheduler_events.jsonl").open("a", encoding="utf-8", buffering=1) as handle:
+        handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def acquire_run_lock(root):
+    """Prevent two scheduler processes from mutating the same run directory."""
+    root = Path(root)
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / "scheduler.lock"
+    handle = lock_path.open("a+", encoding="utf-8")
+    try:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        handle.seek(0)
+        owner = handle.read().strip() or "unknown owner"
+        handle.close()
+        raise RuntimeError(
+            f"Another sparse-interface scheduler already holds {lock_path}: {owner}"
+        ) from error
+    except ImportError:
+        # This experiment runs on Linux; retain importability for local Windows tests.
+        pass
+    handle.seek(0)
+    handle.truncate()
+    handle.write(json.dumps({"pid": os.getpid(), "started_at": time.strftime("%F %T")}) + "\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+    return handle
+
+
+def restore_attempt_counts(root, tasks):
+    """Keep attempt numbering monotonic across an intentional scheduler restart."""
+    path = Path(root) / "scheduler_events.jsonl"
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if row.get("event") != "launch" or row.get("task") not in tasks:
+            continue
+        task = tasks[row["task"]]
+        task.attempts = max(task.attempts, int(row.get("attempt", 0)))
+
+
+def decoded_returncode(code):
+    if code is None:
+        return None
+    if code < 0:
+        try:
+            return signal.Signals(-code).name
+        except ValueError:
+            return f"signal_{-code}"
+    if code >= 128:
+        try:
+            return signal.Signals(code - 128).name
+        except ValueError:
+            pass
+    return "normal_exit"
+
+
+def launch_task(task, gpu, args, root):
+    task.log.parent.mkdir(parents=True, exist_ok=True)
+    task.handle = task.log.open("a", encoding="utf-8", buffering=1)
+    attempt = task.attempts + 1
+    command = list(task.command)
+    task.handle.write(
+        f"\n[{time.strftime('%F %T')}] attempt {attempt} GPU {gpu} "
+        f"scheduler_pid={os.getpid()}\n{shlex.join(command)}\n"
+    )
+    env = os.environ.copy()
+    env.update({
+        "CUDA_VISIBLE_DEVICES": gpu,
+        "PYTHONUNBUFFERED": "1",
+        "TOKENIZERS_PARALLELISM": "false",
+    })
+    if args.diffusers_src:
+        env["PYTHONPATH"] = args.diffusers_src + (
+            os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+        )
+    task.process = subprocess.Popen(
+        command, cwd=task.cwd, env=env, stdout=task.handle, stderr=subprocess.STDOUT
+    )
+    task.attempts = attempt
+    append_scheduler_event(
+        root, "launch", task=task.name, kind=task.kind, gpu=str(gpu), attempt=attempt,
+        child_pid=task.process.pid, log=str(task.log), command=command,
+    )
+    print(
+        f"LAUNCH GPU {gpu}: {task.name} (attempt {attempt}, pid {task.process.pid})",
+        flush=True,
+    )
 
 
 def parse_args():
@@ -238,8 +349,14 @@ def build_tasks(args, reuse):
 def run_scheduler(args, tasks):
     root = Path(args.run_root).resolve()
     gpus = [item.strip() for item in args.gpus.split(",") if item.strip()]
+    if not gpus:
+        raise ValueError("At least one GPU is required")
+    restore_attempt_counts(root, tasks)
     completed = {name for name, task in tasks.items() if task.complete()}
     running = {}
+    append_scheduler_event(
+        root, "scheduler_start", gpus=gpus, tasks=len(tasks), completed=len(completed)
+    )
     print(f"Sparse-interface transfer: {len(completed)}/{len(tasks)} tasks complete", flush=True)
     while len(completed) < len(tasks):
         now = time.time()
@@ -247,17 +364,37 @@ def run_scheduler(args, tasks):
             code = task.process.poll()
             if code is None:
                 continue
-            task.handle.write(f"[{time.strftime('%F %T')}] exit code {code}\n")
+            exit_kind = decoded_returncode(code)
+            task.handle.write(
+                f"[{time.strftime('%F %T')}] exit code {code} ({exit_kind}) "
+                f"scheduler_pid={os.getpid()} child_pid={task.process.pid}\n"
+            )
             task.handle.close()
+            child_pid = task.process.pid
             task.process = task.handle = None
             del running[gpu]
             if code == 0 and task.complete():
                 completed.add(task.name)
+                append_scheduler_event(
+                    root, "complete", task=task.name, gpu=str(gpu), attempt=task.attempts,
+                    child_pid=child_pid, returncode=code, exit_kind=exit_kind,
+                )
                 print(f"DONE GPU {gpu}: {task.name} ({len(completed)}/{len(tasks)})", flush=True)
             else:
                 failed = task.log.with_name(f"{task.log.name}.failed_{task.attempts}_{time.strftime('%Y%m%dT%H%M%S')}")
                 if task.log.exists():
                     task.log.replace(failed)
+                task.log.write_text(
+                    f"Previous attempt {task.attempts} exited with {code} ({exit_kind}).\n"
+                    f"Archived log: {failed}\n"
+                    f"Scheduler event log: {root / 'scheduler_events.jsonl'}\n",
+                    encoding="utf-8",
+                )
+                append_scheduler_event(
+                    root, "failure", task=task.name, gpu=str(gpu), attempt=task.attempts,
+                    child_pid=child_pid, returncode=code, exit_kind=exit_kind,
+                    archived_log=str(failed), retry_delay_seconds=args.retry_delay_seconds,
+                )
                 if args.max_retries and task.attempts >= args.max_retries:
                     raise RuntimeError(f"Task exhausted retries: {task.name}; see {failed}")
                 task.next_ready = time.time() + args.retry_delay_seconds
@@ -272,10 +409,11 @@ def run_scheduler(args, tasks):
             if not ready:
                 break
             task = ready.pop(0)
-            launch(task, gpu, args)
+            launch_task(task, gpu, args, root)
             running[gpu] = task
         write_state(root, tasks, completed, running)
         time.sleep(5)
+    append_scheduler_event(root, "scheduler_complete", tasks=len(tasks), completed=len(completed))
 
 
 def main():
@@ -299,6 +437,8 @@ def main():
         )
     root = Path(args.run_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
+    run_lock = acquire_run_lock(root)
+    append_scheduler_event(root, "lock_acquired", lock=str(root / "scheduler.lock"))
     reuse = load_reuse(args.reuse_index)
     tasks, index = build_tasks(args, reuse)
     manifest = {
@@ -340,7 +480,26 @@ def main():
         "--evaluation-index", str(index_path), "--output-dir", str(root / "summary"),
     ], cwd=REPO_ROOT, check=True)
     (root / "COMPLETE").write_text(time.strftime("%F %T\n"), encoding="utf-8")
+    append_scheduler_event(root, "experiment_complete")
+    run_lock.close()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BaseException as error:
+        run_root = None
+        try:
+            argv = sys.argv
+            if "--run-root" in argv:
+                run_root = Path(argv[argv.index("--run-root") + 1]).resolve()
+                append_scheduler_event(
+                    run_root, "scheduler_fatal", error_type=type(error).__name__,
+                    error=str(error), traceback=traceback.format_exc(),
+                )
+                (run_root / "scheduler_fatal.log").write_text(
+                    traceback.format_exc(), encoding="utf-8"
+                )
+        except Exception:
+            pass
+        raise
