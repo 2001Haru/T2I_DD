@@ -77,9 +77,13 @@ def main():
         cells.append(cell)
         by_key[(row["bank_seed"], row["budget"], row["generation_seed"], row["prompt"])] = values
 
+    available_prompts = sorted({row["prompt"] for row in cells})
+    if not available_prompts:
+        raise ValueError("Evaluation index contains no prompt conditions")
+
     performance = []
     for budget in sorted({row["budget"] for row in cells}):
-        for prompt in ("label", "bank"):
+        for prompt in available_prompts:
             selected = [row for row in cells if row["budget"] == budget and row["prompt"] == prompt]
             lower, upper = hierarchical_bootstrap(selected, "scores", args.bootstrap_samples)
             flattened = [value for row in selected for value in row["scores"]]
@@ -92,55 +96,69 @@ def main():
             })
 
     contrasts = []
-    for budget in sorted({row["budget"] for row in cells}):
-        paired_rows = []
-        for bank_seed in sorted({row["bank_seed"] for row in cells}):
-            for generation_seed in sorted({row["generation_seed"] for row in cells}):
-                bank = by_key[(bank_seed, budget, generation_seed, "bank")]
-                label = by_key[(bank_seed, budget, generation_seed, "label")]
-                paired_rows.append({
-                    "bank_seed": bank_seed, "generation_seed": generation_seed,
-                    "differences": [left - right for left, right in zip(bank, label)],
-                })
-        lower, upper = hierarchical_bootstrap(
-            paired_rows, "differences", args.bootstrap_samples, seed=20260812 + budget
-        )
-        values = [value for row in paired_rows for value in row["differences"]]
-        contrasts.append({
-            "budget": budget, "contrast": "bank_minus_label",
-            "mean_difference": statistics.fmean(values),
-            "bootstrap_ci_lower": lower, "bootstrap_ci_upper": upper,
-            "bank_generation_cells": len(paired_rows),
-            "paired_classifier_observations": len(values),
-        })
+    if {"label", "bank"}.issubset(available_prompts):
+        for budget in sorted({row["budget"] for row in cells}):
+            paired_rows = []
+            for bank_seed in sorted({row["bank_seed"] for row in cells}):
+                for generation_seed in sorted({row["generation_seed"] for row in cells}):
+                    bank = by_key[(bank_seed, budget, generation_seed, "bank")]
+                    label = by_key[(bank_seed, budget, generation_seed, "label")]
+                    paired_rows.append({
+                        "bank_seed": bank_seed, "generation_seed": generation_seed,
+                        "differences": [left - right for left, right in zip(bank, label)],
+                    })
+            lower, upper = hierarchical_bootstrap(
+                paired_rows, "differences", args.bootstrap_samples, seed=20260812 + budget
+            )
+            values = [value for row in paired_rows for value in row["differences"]]
+            contrasts.append({
+                "budget": budget, "contrast": "bank_minus_label",
+                "mean_difference": statistics.fmean(values),
+                "bootstrap_ci_lower": lower, "bootstrap_ci_upper": upper,
+                "bank_generation_cells": len(paired_rows),
+                "paired_classifier_observations": len(values),
+            })
 
-    maximum = max(row["budget"] for row in cells)
     saturation = []
-    for budget in sorted({row["budget"] for row in cells}):
-        paired_rows = []
-        for bank_seed in sorted({row["bank_seed"] for row in cells}):
-            for generation_seed in sorted({row["generation_seed"] for row in cells}):
-                current = by_key[(bank_seed, budget, generation_seed, "bank")]
-                endpoint = by_key[(bank_seed, maximum, generation_seed, "bank")]
-                paired_rows.append({
-                    "bank_seed": bank_seed, "generation_seed": generation_seed,
-                    "differences": [left - right for left, right in zip(current, endpoint)],
-                })
-        lower, upper = hierarchical_bootstrap(
-            paired_rows, "differences", args.bootstrap_samples, seed=20260900 + budget
-        )
-        values = [value for row in paired_rows for value in row["differences"]]
-        saturation.append({
-            "budget": budget, "reference_budget": maximum,
-            "contrast": "bank_budget_minus_bank_maximum",
-            "mean_difference": statistics.fmean(values),
-            "bootstrap_ci_lower": lower, "bootstrap_ci_upper": upper,
-            "noninferior_within_1pt_by_95pct_ci": lower >= -1.0 - 1e-12,
-        })
+    if "bank" in available_prompts:
+        maximum = max(row["budget"] for row in cells)
+        for budget in sorted({row["budget"] for row in cells}):
+            paired_rows = []
+            for bank_seed in sorted({row["bank_seed"] for row in cells}):
+                for generation_seed in sorted({row["generation_seed"] for row in cells}):
+                    current = by_key[(bank_seed, budget, generation_seed, "bank")]
+                    endpoint = by_key[(bank_seed, maximum, generation_seed, "bank")]
+                    paired_rows.append({
+                        "bank_seed": bank_seed, "generation_seed": generation_seed,
+                        "differences": [left - right for left, right in zip(current, endpoint)],
+                    })
+            lower, upper = hierarchical_bootstrap(
+                paired_rows, "differences", args.bootstrap_samples, seed=20260900 + budget
+            )
+            values = [value for row in paired_rows for value in row["differences"]]
+            saturation.append({
+                "budget": budget, "reference_budget": maximum,
+                "contrast": "bank_budget_minus_bank_maximum",
+                "mean_difference": statistics.fmean(values),
+                "bootstrap_ci_lower": lower, "bootstrap_ci_upper": upper,
+                "noninferior_within_1pt_by_95pct_ci": lower >= -1.0 - 1e-12,
+            })
 
     write_csv(output / "performance_by_budget.csv", performance, performance[0].keys())
-    write_csv(output / "bank_gain_by_budget.csv", contrasts, contrasts[0].keys())
-    write_csv(output / "saturation_vs_m32.csv", saturation, saturation[0].keys())
+    write_csv(
+        output / "bank_gain_by_budget.csv", contrasts,
+        contrasts[0].keys() if contrasts else (
+            "budget", "contrast", "mean_difference", "bootstrap_ci_lower",
+            "bootstrap_ci_upper", "bank_generation_cells", "paired_classifier_observations",
+        ),
+    )
+    write_csv(
+        output / "saturation_vs_m32.csv", saturation,
+        saturation[0].keys() if saturation else (
+            "budget", "reference_budget", "contrast", "mean_difference",
+            "bootstrap_ci_lower", "bootstrap_ci_upper", "noninferior_within_1pt_by_95pct_ci",
+        ),
+    )
     summary = {
         "format_version": 1,
         "performance": performance,
@@ -148,12 +166,13 @@ def main():
         "saturation": saturation,
         "bootstrap_order": "bank seed -> generation seed -> paired classifier repeat",
         "selection_design": "nested random class-caption banks",
+        "available_prompts": available_prompts,
     }
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
-    budgets = [row["budget"] for row in performance if row["prompt"] == "bank"]
+    budgets = sorted({row["budget"] for row in performance})
     fig, axes = plt.subplots(1, 2, figsize=(13, 5))
-    for prompt in ("label", "bank"):
+    for prompt in available_prompts:
         rows = [row for row in performance if row["prompt"] == prompt]
         axes[0].errorbar(
             [row["budget"] for row in rows], [row["mean_accuracy"] for row in rows],
@@ -168,19 +187,26 @@ def main():
     axes[0].set_ylabel("Validation accuracy")
     axes[0].set_title("Sparse prompt-bank performance")
     axes[0].legend()
-    axes[1].errorbar(
-        [row["budget"] for row in contrasts], [row["mean_difference"] for row in contrasts],
-        yerr=[
-            [row["mean_difference"] - row["bootstrap_ci_lower"] for row in contrasts],
-            [row["bootstrap_ci_upper"] - row["mean_difference"] for row in contrasts],
-        ], marker="o", capsize=4,
-    )
-    axes[1].axhline(0, color="black", linestyle="--", linewidth=1)
-    axes[1].set_xscale("log", base=2)
-    axes[1].set_xticks(budgets, labels=budgets)
-    axes[1].set_xlabel("Captions per class (m)")
-    axes[1].set_ylabel("Bank minus label accuracy")
-    axes[1].set_title("Marginal utility and saturation")
+    if contrasts:
+        axes[1].errorbar(
+            [row["budget"] for row in contrasts], [row["mean_difference"] for row in contrasts],
+            yerr=[
+                [row["mean_difference"] - row["bootstrap_ci_lower"] for row in contrasts],
+                [row["bootstrap_ci_upper"] - row["mean_difference"] for row in contrasts],
+            ], marker="o", capsize=4,
+        )
+        axes[1].axhline(0, color="black", linestyle="--", linewidth=1)
+        axes[1].set_xscale("log", base=2)
+        axes[1].set_xticks(budgets, labels=budgets)
+        axes[1].set_xlabel("Captions per class (m)")
+        axes[1].set_ylabel("Bank minus label accuracy")
+        axes[1].set_title("Marginal utility and saturation")
+    else:
+        axes[1].axis("off")
+        axes[1].text(
+            0.5, 0.5, "Bank inference was not requested",
+            ha="center", va="center", transform=axes[1].transAxes,
+        )
     fig.tight_layout()
     fig.savefig(output / "sparse_prompt_search.png", dpi=180)
     plt.close(fig)

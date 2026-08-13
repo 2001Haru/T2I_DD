@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -63,6 +64,27 @@ class SparsePromptSearchTests(unittest.TestCase):
             self.assertEqual(sum(task.kind == "train" for task in tasks.values()), 8)
             self.assertEqual(sum(task.kind == "generate" for task in tasks.values()), 16)
             self.assertEqual(sum(task.kind == "eval" for task in tasks.values()), 32)
+
+    def test_label_only_summary_completes_without_bank_rows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log = root / "label.log"
+            log.write_text("Best, last acc:----[78.0, 79.0]\n", encoding="utf-8")
+            index = root / "index.json"
+            index.write_text(json.dumps([{
+                "bank_seed": 0, "budget": 4, "generation_seed": 0,
+                "prompt": "label", "evaluation_log": str(log),
+            }]), encoding="utf-8")
+            output = root / "summary"
+            subprocess.run([
+                sys.executable, str(HERE / "summarize_sparse_prompt_search.py"),
+                "--evaluation-index", str(index), "--output-dir", str(output),
+                "--bootstrap-samples", "20",
+            ], check=True)
+            summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["available_prompts"], ["label"])
+            self.assertEqual(summary["bank_minus_label"], [])
+            self.assertEqual(summary["saturation"], [])
 
 
 if __name__ == "__main__":

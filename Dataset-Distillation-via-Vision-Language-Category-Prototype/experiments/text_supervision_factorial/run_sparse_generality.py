@@ -80,6 +80,14 @@ def write_state(root, pending, running, completed):
     (root / "scheduler_state.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def pop_ready(pending, retry_at, now):
+    """Pop the first ready job without letting a cooling retry block fresh work."""
+    for index, item in enumerate(pending):
+        if retry_at.get(item[0], 0) <= now:
+            return pending.pop(index)
+    return None
+
+
 def main():
     args = parse_args()
     if hasattr(signal, "SIGHUP"):
@@ -115,6 +123,7 @@ def main():
     completed = [name for name, _, output in jobs if child_complete(output)]
     pending = [item for item in jobs if item[0] not in completed]
     running = {}
+    retry_at = {}
     logs = root / "scheduler_logs"
     logs.mkdir(exist_ok=True)
     print(f"Sparse generality: {len(completed)}/{len(jobs)} child pipelines complete", flush=True)
@@ -128,15 +137,17 @@ def main():
             del running[gpu]
             if code == 0 and child_complete(output):
                 completed.append(name)
+                retry_at.pop(name, None)
                 print(f"DONE GPU {gpu}: {name}", flush=True)
             else:
                 print(f"REQUEUE GPU {gpu}: {name} after {args.retry_delay_seconds}s", flush=True)
-                time.sleep(args.retry_delay_seconds)
-                pending.insert(0, (name, command, output))
+                retry_at[name] = time.time() + args.retry_delay_seconds
+                pending.append((name, command, output))
         for gpu in [value for value in gpus if value not in running]:
-            if not pending:
+            job = pop_ready(pending, retry_at, time.time())
+            if job is None:
                 break
-            name, command, output = pending.pop(0)
+            name, command, output = job
             command = list(command)
             command[command.index("--gpus") + 1] = gpu
             log = logs / f"{name}.log"

@@ -33,6 +33,13 @@ class SparseGeneralityTest(unittest.TestCase):
             self.assertEqual(command[command.index("--gpus") + 1], "1")
             self.assertEqual(output, root / "run" / "woof" / "train_seed_1")
 
+    def test_cooling_retry_does_not_block_fresh_dataset(self):
+        pending = [("nette", [], Path("nette")), ("woof", [], Path("woof"))]
+        retry_at = {"nette": 200.0}
+        selected = MODULE.pop_ready(pending, retry_at, now=100.0)
+        self.assertEqual(selected[0], "woof")
+        self.assertEqual(pending[0][0], "nette")
+
 
 if __name__ == "__main__":
     unittest.main()
