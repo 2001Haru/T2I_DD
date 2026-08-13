@@ -12,6 +12,8 @@ RUN_ROOT="${RUN_ROOT:-${REPO_ROOT}/sparse_prompt_search_runs/random_sparse_margi
 PROTOTYPE="${PROTOTYPE:-${GENERALITY_RUN_ROOT}/artifacts/nette/ipc50/nette-ipc50-0.7-30-kmexpand1.json}"
 DCS="${DCS:-${GENERALITY_RUN_ROOT}/artifacts/nette/ipc50/dcs.json}"
 GPU_IDS="${GPU_IDS:-0,1,2,3}"
+TRAINING_SEEDS="${TRAINING_SEEDS:-0}"
+GENERATION_SEEDS="${GENERATION_SEEDS:-0 1}"
 DIFFUSERS_SRC="${DIFFUSERS_SRC:-/linxi/packages/VLCP/diffusers/src}"
 
 cd "${REPO_ROOT}"
@@ -25,8 +27,8 @@ python experiments/text_supervision_factorial/run_sparse_checkpoint_controls.py 
   --dcs "${DCS}" \
   --run-root "${RUN_ROOT}" \
   --gpus "${GPU_IDS}" \
-  --training-seeds 0 1 \
-  --generation-seeds 0 1 \
+  --training-seeds ${TRAINING_SEEDS} \
+  --generation-seeds ${GENERATION_SEEDS} \
   --ipc 50 \
   --strength 0.8 \
   --classifier-repeats 2 \

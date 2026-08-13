@@ -94,6 +94,7 @@ def config_digest(path):
 def audit_checkpoints(args, output):
     records = []
     errors = []
+    warnings = []
     reference = {}
     for training_seed in sorted(set(args.training_seeds)):
         for supervision in AUDIT_SUPERVISIONS:
@@ -110,8 +111,14 @@ def audit_checkpoints(args, output):
                 )
             if int(summary.get("epochs", -1)) != 8:
                 errors.append(f"{model}: epochs={summary.get('epochs')!r}, expected=8")
-            if int(summary.get("seed", -1)) != training_seed:
-                errors.append(f"{model}: seed={summary.get('seed')!r}, expected={training_seed}")
+            recorded_seed = summary.get("seed")
+            if recorded_seed is None:
+                warnings.append(
+                    f"{model}: legacy summary does not record seed; "
+                    f"using path-selected training seed {training_seed}"
+                )
+            elif int(recorded_seed) != training_seed:
+                errors.append(f"{model}: seed={recorded_seed!r}, expected={training_seed}")
             if summary.get("sparse_bank") not in (None, ""):
                 errors.append(f"{model}: unexpectedly records sparse_bank={summary['sparse_bank']!r}")
             digests = {}
@@ -136,6 +143,7 @@ def audit_checkpoints(args, output):
         "status": "pass" if not errors else "fail",
         "checks": records,
         "errors": errors,
+        "warnings": warnings,
         "expected_common_protocol": {
             "epochs": 8,
             "resolution": 512,
@@ -148,9 +156,11 @@ def audit_checkpoints(args, output):
             "use_ema": True,
         },
         "boundary": (
-            "Legacy training summaries store epochs, supervision, seed, and completion but not the full "
-            "optimizer command. Full-protocol equality is reconstructed from the repository launch scripts; "
-            "this audit directly verifies saved summary fields and normalized pipeline component configs."
+            "Legacy training summaries may omit seed and do not store the full optimizer command. A missing "
+            "seed is recorded as a warning and the explicitly selected checkpoint path defines the training "
+            "seed; a present but mismatched seed remains fatal. Full-protocol equality is reconstructed from "
+            "the repository launch scripts, while this audit directly verifies available summary fields and "
+            "normalized pipeline component configs."
         ),
     }
     output.parent.mkdir(parents=True, exist_ok=True)

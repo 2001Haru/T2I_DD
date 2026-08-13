@@ -433,3 +433,8 @@ Label controls. Matched-FT is not regenerated because Matrix D already contains
 the exact ImageNette IPC50, strength 0.8 endpoint. The summary joins the new
 controls with the existing Sparse-FT results and bootstraps their checkpoint
 realizations independently.
+
+The historical base run contains only training seed 0, so this quick control
+defaults to `TRAINING_SEEDS=0`. Legacy summaries that omit the seed field are
+accepted with an audit warning; an explicitly recorded mismatched seed remains
+fatal. Override with `TRAINING_SEEDS="0 1"` only when both checkpoint sets exist.

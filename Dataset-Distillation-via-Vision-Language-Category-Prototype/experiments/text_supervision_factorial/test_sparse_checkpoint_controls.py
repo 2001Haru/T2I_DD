@@ -90,6 +90,20 @@ class SparseCheckpointControlTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "epochs=7"):
                 audit_checkpoints(args, root / "audit.json")
 
+    def test_audit_accepts_missing_legacy_seed_with_warning(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = self.args(root)
+            self.populate(args)
+            model = checkpoint_path(args, "label_ft", 0)
+            summary = json.loads((model / "training_summary.json").read_text())
+            summary.pop("seed")
+            (model / "training_summary.json").write_text(json.dumps(summary))
+            audit_checkpoints(args, root / "audit.json")
+            report = json.loads((root / "audit.json").read_text())
+            self.assertEqual(report["status"], "pass")
+            self.assertTrue(any("legacy summary does not record seed" in item for item in report["warnings"]))
+
 
 if __name__ == "__main__":
     unittest.main()
