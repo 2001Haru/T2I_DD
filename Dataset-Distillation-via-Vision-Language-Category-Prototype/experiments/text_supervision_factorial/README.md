@@ -414,3 +414,21 @@ and a summary plot. The script requires complete Nette/Woof x strength
 0.7/0.9 cells for Label-FT, Unpaired-FT, and Matched-FT. Missing cells suppress
 the pooled conclusions, and a Matrix R index under a different standard run
 directory is rejected.
+
+### Sparse checkpoint controls
+
+After `run_sparse_prompt_search.sh` completes, compare Sparse-FT with the
+existing Empty/Label/Unpaired/Matched checkpoints without any new fine-tuning:
+
+```bash
+nohup bash experiments/text_supervision_factorial/run_sparse_checkpoint_controls.sh \
+  > sparse_checkpoint_controls.out 2>&1 &
+```
+
+The runner first writes `checkpoint_protocol_audit.json` and refuses to start
+generation if the historical checkpoint summaries or normalized Diffusers
+component configurations disagree. It then evaluates every checkpoint with
+the same ImageNette IPC50 prototype, strength 0.8, generation seeds, Label
+prompt, and classifier protocol used by the sparse search. Its summary joins
+the existing Sparse-FT results and reports Sparse-FT minus each control with
+checkpoint realizations bootstrapped independently.

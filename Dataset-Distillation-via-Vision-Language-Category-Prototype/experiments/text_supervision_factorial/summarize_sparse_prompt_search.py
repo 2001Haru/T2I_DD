@@ -135,7 +135,7 @@ def main():
             "contrast": "bank_budget_minus_bank_maximum",
             "mean_difference": statistics.fmean(values),
             "bootstrap_ci_lower": lower, "bootstrap_ci_upper": upper,
-            "noninferior_within_1pt_by_95pct_ci": lower >= -1.0,
+            "noninferior_within_1pt_by_95pct_ci": lower >= -1.0 - 1e-12,
         })
 
     write_csv(output / "performance_by_budget.csv", performance, performance[0].keys())
