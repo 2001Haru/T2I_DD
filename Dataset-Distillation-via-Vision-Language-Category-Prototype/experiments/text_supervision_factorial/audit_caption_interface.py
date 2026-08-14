@@ -18,6 +18,7 @@ from classes import IMAGENET2012_CLASSES  # noqa: E402
 
 
 WORD_RE = re.compile(r"[A-Za-z]+(?:-[A-Za-z]+)?")
+SYNSET_RE = re.compile(r"(?<![A-Za-z0-9])n\d{8}(?!\d)")
 ATTRIBUTE_WORDS = {
     "alert", "angular", "arched", "bent", "black", "blue", "broad", "brown",
     "bushy", "circular", "compact", "curved", "dark", "dense", "erect", "fat",
@@ -69,6 +70,18 @@ def parse_named_paths(entries, flag):
     return output
 
 
+def infer_synset(relative):
+    """Resolve a WordNet ID from either class-directory or flat filename layouts."""
+    normalized = str(relative).replace("\\", "/")
+    for part in Path(normalized).parts:
+        if part in IMAGENET2012_CLASSES:
+            return part
+    for candidate in SYNSET_RE.findall(normalized):
+        if candidate in IMAGENET2012_CLASSES:
+            return candidate
+    return ""
+
+
 def read_jsonl_captions(dataset, path):
     rows = []
     seen = set()
@@ -81,9 +94,12 @@ def read_jsonl_captions(dataset, path):
             text = str(item.get("text", item.get("caption", ""))).strip()
             if not relative or not text:
                 raise ValueError(f"Invalid caption row {path}:{line_number}")
-            synset = Path(relative).parts[0]
-            if synset not in IMAGENET2012_CLASSES:
-                raise ValueError(f"Unknown synset in {path}:{line_number}: {synset}")
+            synset = infer_synset(relative)
+            if not synset:
+                raise ValueError(
+                    f"Could not infer a valid ImageNet synset from "
+                    f"{path}:{line_number}: {relative}"
+                )
             if relative in seen:
                 raise ValueError(f"Duplicate caption relative path in {path}: {relative}")
             seen.add(relative)

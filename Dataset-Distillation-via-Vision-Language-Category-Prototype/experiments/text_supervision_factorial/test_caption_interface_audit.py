@@ -13,6 +13,7 @@ sys.path.insert(0, str(HERE))
 from audit_caption_interface import (
     audit_row,
     evaluate_features,
+    infer_synset,
     load_corpora,
     probe_interface_deltas,
     summarize_audit,
@@ -36,6 +37,14 @@ class FakeTokenizer:
 
 
 class CaptionInterfaceAuditTests(unittest.TestCase):
+    def test_synset_inference_supports_directory_and_flat_woof_names(self):
+        self.assertEqual(infer_synset("n01440764/example.JPEG"), "n01440764")
+        self.assertEqual(
+            infer_synset("n02096294_1424_n02096294.JPEG"),
+            "n02096294",
+        )
+        self.assertEqual(infer_synset("not_an_imagenet_file.JPEG"), "")
+
     def test_audit_uses_content_budget_and_reports_lost_tail(self):
         row = {
             "dataset": "nette", "condition": "matched_caption", "record_id": "x",
