@@ -16,6 +16,7 @@ from generate_factorial import (  # noqa: E402
     epsilon_branch_metrics,
     first_sentence,
     get_pipeline_embeds,
+    official_exact_length,
     planned_guidance_timesteps,
     schedule_matched_noise,
     text_chunk_count,
@@ -179,6 +180,17 @@ class AssignmentTests(unittest.TestCase):
         )
         self.assertEqual(tuple(positive.shape), (1, 77, 3))
         self.assertEqual(tuple(negative.shape), (1, 77, 3))
+
+    def test_official_exact_policy_preserves_short_shared_length(self):
+        prompt = "class label with several words"
+        negative = "negative prompt"
+        expected = official_exact_length(FakeTokenizer(), prompt, negative)
+        positive, negative_embeds = get_pipeline_embeds(
+            FakePipe(), prompt, negative, "cpu", policy="official_exact"
+        )
+        self.assertEqual(expected, 7)
+        self.assertEqual(tuple(positive.shape), (1, expected, 3))
+        self.assertEqual(tuple(negative_embeds.shape), (1, expected, 3))
 
     def test_matrix_has_eighteen_unique_cells(self):
         conditions = [item["condition"] for item in condition_matrix()]

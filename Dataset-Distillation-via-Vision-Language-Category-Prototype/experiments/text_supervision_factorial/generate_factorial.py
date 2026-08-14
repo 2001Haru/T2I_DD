@@ -28,6 +28,7 @@ from common import (  # noqa: E402
 GENERATION_SUPERVISION_MODES = SUPERVISION_MODES + ("sparse_ft",)
 GENERATION_PROMPT_MODES = PROMPT_MODES + (
     "bank",
+    "label_var",
     "first_sentence",
     "correct_t77",
     "label_pad_dcs",
@@ -100,6 +101,12 @@ def text_chunk_count(tokenizer, text):
     return max(1, (token_count + chunk - 1) // chunk)
 
 
+def official_exact_length(tokenizer, prompt, negative_prompt):
+    """Return the shared token length selected by VLCP's official helper."""
+    longer = prompt if len(prompt.split(" ")) >= len(negative_prompt.split(" ")) else negative_prompt
+    return tokenizer(longer, return_tensors="pt", truncation=False).input_ids.shape[-1]
+
+
 def first_sentence(text):
     text = str(text).strip()
     match = re.match(r"^.*?[.!?](?=\s|$)", text)
@@ -115,6 +122,41 @@ def get_pipeline_embeds(
     target_chunks=None,
 ):
     chunk = pipe.tokenizer.model_max_length
+    if policy == "official_exact":
+        # Match VLCP's get_pipeline_embeds implementation, including its word-count
+        # branch and a final raw slice that may be shorter than model_max_length.
+        count_prompt = len(prompt.split(" "))
+        count_negative = len(negative_prompt.split(" "))
+        if count_prompt >= count_negative:
+            prompt_ids = pipe.tokenizer(
+                prompt, return_tensors="pt", truncation=False,
+            ).input_ids
+            length = prompt_ids.shape[-1]
+            negative_ids = pipe.tokenizer(
+                negative_prompt, padding="max_length", max_length=length,
+                truncation=False, return_tensors="pt",
+            ).input_ids
+        else:
+            negative_ids = pipe.tokenizer(
+                negative_prompt, return_tensors="pt", truncation=False,
+            ).input_ids
+            length = negative_ids.shape[-1]
+            prompt_ids = pipe.tokenizer(
+                prompt, padding="max_length", max_length=length,
+                truncation=False, return_tensors="pt",
+            ).input_ids
+        prompt_ids = prompt_ids.to(device)
+        negative_ids = negative_ids.to(device)
+        prompt_embeds = [
+            pipe.text_encoder(prompt_ids[:, start:start + chunk])[0]
+            for start in range(0, length, chunk)
+        ]
+        negative_embeds = [
+            pipe.text_encoder(negative_ids[:, start:start + chunk])[0]
+            for start in range(0, length, chunk)
+        ]
+        return torch.cat(prompt_embeds, dim=1), torch.cat(negative_embeds, dim=1)
+
     if policy == "single":
         prompt_ids = pipe.tokenizer(
             prompt, padding="max_length", max_length=chunk, truncation=True,
@@ -198,6 +240,8 @@ def prompt_for(synset, index, image_index, mode, dcs, shift, prompt_bank):
     correct = str(dcs[synset][index])
     if mode == "label":
         return IMAGENET2012_CLASSES[synset], None, None, "chunked", correct
+    if mode == "label_var":
+        return IMAGENET2012_CLASSES[synset], None, None, "official_exact", correct
     if mode == "first_sentence":
         return first_sentence(correct), index, None, "single", correct
     if mode == "correct_t77":
@@ -334,6 +378,11 @@ def generate(pipe, prototypes, dcs, prompt_bank, supervision, prompt_mode, gener
                     }
                     else (1 if embedding_policy == "single" else text_chunk_count(pipe.tokenizer, prompt))
                 )
+                conditioning_sequence_length = (
+                    official_exact_length(pipe.tokenizer, prompt, args.negative_prompt)
+                    if embedding_policy == "official_exact"
+                    else conditioning_chunks * pipe.tokenizer.model_max_length
+                )
                 image_seed = stable_image_seed(generation_seed, class_index, image_index)
                 record = {
                     "synset": synset,
@@ -344,7 +393,7 @@ def generate(pipe, prototypes, dcs, prompt_bank, supervision, prompt_mode, gener
                     "prompt": prompt,
                     "embedding_policy": embedding_policy,
                     "conditioning_chunks": conditioning_chunks,
-                    "conditioning_sequence_length": conditioning_chunks * pipe.tokenizer.model_max_length,
+                    "conditioning_sequence_length": conditioning_sequence_length,
                     "reference_dcs": reference_dcs,
                     "reference_dcs_chunks": reference_dcs_chunks,
                     "chunk_count_unit": "individual_prompt_not_batch_max",
@@ -372,7 +421,7 @@ def generate(pipe, prototypes, dcs, prompt_bank, supervision, prompt_mode, gener
                 )
                 if prompt_embeds.shape[1] != negative_embeds.shape[1]:
                     raise RuntimeError("Positive and negative conditioning lengths differ")
-                if prompt_embeds.shape[1] != conditioning_chunks * pipe.tokenizer.model_max_length:
+                if prompt_embeds.shape[1] != conditioning_sequence_length:
                     raise RuntimeError("Conditioning sequence length does not match its manifest record")
                 generator = torch.Generator(device=args.device).manual_seed(image_seed)
                 call_args = {

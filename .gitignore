@@ -66,3 +66,5 @@ encoders.py
 
 # Data
 *.csv
+
+diffusers/
