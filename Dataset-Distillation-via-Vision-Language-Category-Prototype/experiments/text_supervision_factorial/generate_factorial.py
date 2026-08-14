@@ -102,9 +102,14 @@ def text_chunk_count(tokenizer, text):
 
 
 def official_exact_length(tokenizer, prompt, negative_prompt):
-    """Return the shared token length selected by VLCP's official helper."""
-    longer = prompt if len(prompt.split(" ")) >= len(negative_prompt.split(" ")) else negative_prompt
-    return tokenizer(longer, return_tensors="pt", truncation=False).input_ids.shape[-1]
+    """Return the exact shared length after independently tokenizing both CFG branches."""
+    prompt_length = tokenizer(
+        prompt, return_tensors="pt", truncation=False
+    ).input_ids.shape[-1]
+    negative_length = tokenizer(
+        negative_prompt, return_tensors="pt", truncation=False
+    ).input_ids.shape[-1]
+    return max(prompt_length, negative_length)
 
 
 def first_sentence(text):
@@ -123,28 +128,33 @@ def get_pipeline_embeds(
 ):
     chunk = pipe.tokenizer.model_max_length
     if policy == "official_exact":
-        # Match VLCP's get_pipeline_embeds implementation, including its word-count
-        # branch and a final raw slice that may be shorter than model_max_length.
-        count_prompt = len(prompt.split(" "))
-        count_negative = len(negative_prompt.split(" "))
-        if count_prompt >= count_negative:
-            prompt_ids = pipe.tokenizer(
-                prompt, return_tensors="pt", truncation=False,
-            ).input_ids
-            length = prompt_ids.shape[-1]
-            negative_ids = pipe.tokenizer(
-                negative_prompt, padding="max_length", max_length=length,
-                truncation=False, return_tensors="pt",
-            ).input_ids
-        else:
-            negative_ids = pipe.tokenizer(
-                negative_prompt, return_tensors="pt", truncation=False,
-            ).input_ids
-            length = negative_ids.shape[-1]
-            prompt_ids = pipe.tokenizer(
+        # Preserve VLCP's variable-length raw-slice protocol while replacing its
+        # unsafe whitespace-word heuristic with actual CLIP token lengths. The
+        # official heuristic can choose the shorter token sequence, after which
+        # truncation=False leaves the two CFG branches with incompatible shapes.
+        prompt_raw = pipe.tokenizer(
+            prompt, return_tensors="pt", truncation=False,
+        ).input_ids
+        negative_raw = pipe.tokenizer(
+            negative_prompt, return_tensors="pt", truncation=False,
+        ).input_ids
+        length = max(prompt_raw.shape[-1], negative_raw.shape[-1])
+        prompt_ids = (
+            prompt_raw
+            if prompt_raw.shape[-1] == length
+            else pipe.tokenizer(
                 prompt, padding="max_length", max_length=length,
                 truncation=False, return_tensors="pt",
             ).input_ids
+        )
+        negative_ids = (
+            negative_raw
+            if negative_raw.shape[-1] == length
+            else pipe.tokenizer(
+                negative_prompt, padding="max_length", max_length=length,
+                truncation=False, return_tensors="pt",
+            ).input_ids
+        )
         prompt_ids = prompt_ids.to(device)
         negative_ids = negative_ids.to(device)
         prompt_embeds = [

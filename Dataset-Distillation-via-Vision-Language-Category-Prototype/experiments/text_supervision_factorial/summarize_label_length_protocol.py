@@ -57,7 +57,9 @@ def main():
         flat = [value for values in by_prompt[prompt].values() for value in values]
         performance.append({
             "prompt": prompt,
-            "conditioning_protocol": "padded_77" if prompt == "label" else "official_exact_variable",
+            "conditioning_protocol": (
+                "padded_77" if prompt == "label" else "vlcp_variable_token_aligned"
+            ),
             "mean_accuracy": statistics.fmean(flat),
             "generation_cells": len(by_prompt[prompt]),
             "classifier_observations": len(flat),

@@ -51,6 +51,11 @@ def parse_args():
     parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--skip-probe", action="store_true")
     parser.add_argument("--force-features", action="store_true")
+    parser.add_argument(
+        "--negative-prompt",
+        default="cartoon, anime, painting",
+        help="Negative prompt used by the official VLCP generation script",
+    )
     return parser.parse_args()
 
 
@@ -175,7 +180,7 @@ def read_bank(dataset, path):
 def label_rows(dataset, synsets):
     return [{
         "dataset": dataset,
-        "condition": "label",
+        "condition": "raw_label",
         "record_id": synset,
         "relative": "",
         "synset": synset,
@@ -243,7 +248,45 @@ def first_sentence(text):
     return parts[0] if parts else text
 
 
-def audit_row(tokenizer, row):
+def ordering_diagnostic(tokenizer, text, negative_prompt):
+    """Replay VLCP's whitespace heuristic and compare it with CLIP lengths."""
+    prompt_words = len(str(text).split(" "))
+    negative_words = len(str(negative_prompt).split(" "))
+    prompt_tokens = len(tokenizer(
+        text, add_special_tokens=True, truncation=False,
+    )["input_ids"])
+    negative_tokens = len(tokenizer(
+        negative_prompt, add_special_tokens=True, truncation=False,
+    )["input_ids"])
+
+    word_sign = (prompt_words > negative_words) - (prompt_words < negative_words)
+    token_sign = (prompt_tokens > negative_tokens) - (prompt_tokens < negative_tokens)
+    official_selects_positive = prompt_words >= negative_words
+    token_max_selects_positive = prompt_tokens >= negative_tokens
+    selected_tokens = prompt_tokens if official_selects_positive else negative_tokens
+    other_tokens = negative_tokens if official_selects_positive else prompt_tokens
+    return {
+        "whitespace_words_prompt": prompt_words,
+        "whitespace_words_negative": negative_words,
+        "clip_tokens_prompt": prompt_tokens,
+        "clip_tokens_negative": negative_tokens,
+        "word_order_sign": word_sign,
+        "token_order_sign": token_sign,
+        "word_token_ordering_disagrees": int(word_sign != token_sign),
+        "official_selected_branch": (
+            "positive" if official_selects_positive else "negative"
+        ),
+        "token_max_branch": "positive" if token_max_selects_positive else "negative",
+        "official_branch_disagrees_with_token_max": int(
+            official_selects_positive != token_max_selects_positive
+        ),
+        "official_selected_token_length": selected_tokens,
+        "actual_max_token_length": max(prompt_tokens, negative_tokens),
+        "official_would_shape_mismatch": int(other_tokens > selected_tokens),
+    }
+
+
+def audit_row(tokenizer, row, negative_prompt="cartoon, anime, painting"):
     full_content, full_encoded = content_ids(tokenizer, row["text"], truncation=False)
     visible_content, visible_encoded = content_ids(tokenizer, row["text"], truncation=True)
     prefix_match = full_content[:len(visible_content)] == visible_content
@@ -256,6 +299,7 @@ def audit_row(tokenizer, row):
     first_content, _ = content_ids(tokenizer, first_sentence(row["text"]), truncation=False)
     return {
         **row,
+        **ordering_diagnostic(tokenizer, row["text"], negative_prompt),
         "content_tokens_full": len(full_content),
         "encoded_tokens_full": len(full_encoded),
         "train_visible_content_tokens": len(visible_content),
@@ -272,6 +316,47 @@ def audit_row(tokenizer, row):
         "first_sentence_content_tokens": len(first_content),
         "lost_tail": lost_text,
     }
+
+
+def summarize_ordering(rows):
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[(row["dataset"], row["condition"])].append(row)
+
+    output = []
+    for (dataset, condition), values in sorted(grouped.items()):
+        unique = {}
+        for row in values:
+            unique.setdefault(row["text"], row)
+        unique_values = list(unique.values())
+        output.append({
+            "dataset": dataset,
+            "condition": condition,
+            "records": len(values),
+            "unique_texts": len(unique_values),
+            "ordering_disagreement_records": sum(
+                row["word_token_ordering_disagrees"] for row in values
+            ),
+            "ordering_disagreement_record_fraction": float(np.mean([
+                row["word_token_ordering_disagrees"] for row in values
+            ])),
+            "ordering_disagreement_unique_texts": sum(
+                row["word_token_ordering_disagrees"] for row in unique_values
+            ),
+            "official_branch_disagreement_records": sum(
+                row["official_branch_disagrees_with_token_max"] for row in values
+            ),
+            "shape_mismatch_records": sum(
+                row["official_would_shape_mismatch"] for row in values
+            ),
+            "shape_mismatch_record_fraction": float(np.mean([
+                row["official_would_shape_mismatch"] for row in values
+            ])),
+            "shape_mismatch_unique_texts": sum(
+                row["official_would_shape_mismatch"] for row in unique_values
+            ),
+        })
+    return output
 
 
 def percentile(values, q):
@@ -335,7 +420,7 @@ def plot_audit(rows, summary, output_path):
     import matplotlib.pyplot as plt
 
     datasets = sorted({row["dataset"] for row in rows})
-    conditions = ["matched_caption", "correct_dcs", "sparse_bank", "label"]
+    conditions = ["matched_caption", "correct_dcs", "sparse_bank", "raw_label"]
     figure, axes = plt.subplots(len(datasets), 2, figsize=(14, 4.8 * len(datasets)), squeeze=False)
     for row_index, dataset in enumerate(datasets):
         axis = axes[row_index, 0]
@@ -773,10 +858,20 @@ def main():
         raise RuntimeError(f"Expected SD1.5 CLIP max length 77, got {tokenizer.model_max_length}")
 
     matched_by_dataset, corpus_rows = load_corpora(dataset_paths, dcs_paths, bank_paths)
-    audited = [audit_row(tokenizer, row) for row in corpus_rows]
+    audited = [audit_row(tokenizer, row, args.negative_prompt) for row in corpus_rows]
     summary = summarize_audit(audited)
+    ordering_summary = summarize_ordering(audited)
     write_csv(output_dir / "token_audit_records.csv", audited)
     write_csv(output_dir / "token_audit_summary.csv", summary)
+    write_csv(output_dir / "word_token_ordering_summary.csv", ordering_summary)
+    ordering_mismatches = [
+        row for row in audited if row["word_token_ordering_disagrees"]
+    ]
+    write_csv(output_dir / "word_token_ordering_mismatches.csv", ordering_mismatches)
+    shape_mismatches = [
+        row for row in audited if row["official_would_shape_mismatch"]
+    ]
+    write_csv(output_dir / "official_shape_mismatch_prompts.csv", shape_mismatches)
     truncated = sorted(
         (row for row in audited if row["lost_content_tokens"] > 0),
         key=lambda row: row["lost_content_tokens"], reverse=True,
@@ -793,7 +888,20 @@ def main():
     payload = {
         "format_version": 1,
         "base_model": str(Path(args.base_model).resolve()),
+        "label_protocol": {
+            "condition": "raw_label",
+            "definition": "Exact IMAGENET2012_CLASSES class string without a photo template.",
+            "excluded_controls": [
+                "CoDA matched_label: An natural photo of a {class_name}, centered object.",
+                "constant_ft: A natural photo.",
+            ],
+        },
         "tokenizer_model_max_length": tokenizer.model_max_length,
+        "official_negative_prompt": args.negative_prompt,
+        "official_length_heuristic": (
+            "select padding target by len(text.split(' ')); audited against actual "
+            "untruncated CLIP token lengths including special tokens"
+        ),
         "training_interface": "single CLIP chunk with max_length=77 and truncation=True",
         "inference_interface": "untruncated CLIP IDs split into 77-token chunks",
         "probe_representation_boundary": (
@@ -813,12 +921,22 @@ def main():
             if row["over_encoded_budget_77_fraction"] > 0.20
         ],
         "token_audit": summary,
+        "word_token_ordering_audit": ordering_summary,
         "probe": probe_summary,
         "probe_status": probe_status,
     }
     (output_dir / "summary.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
     )
+    print("Official VLCP whitespace/token ordering audit:")
+    for row in ordering_summary:
+        print(
+            f"  {row['dataset']}/{row['condition']}: "
+            f"ordering={row['ordering_disagreement_records']}/{row['records']}, "
+            f"shape_mismatch={row['shape_mismatch_records']}/{row['records']}, "
+            f"unique_shape_mismatch={row['shape_mismatch_unique_texts']}/"
+            f"{row['unique_texts']}"
+        )
     print(f"Caption-interface audit saved to: {output_dir}")
 
 

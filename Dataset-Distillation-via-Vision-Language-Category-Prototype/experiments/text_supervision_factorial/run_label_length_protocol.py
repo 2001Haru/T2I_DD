@@ -127,13 +127,23 @@ def main():
             "negative_prompt": "cartoon, anime, painting",
             "paired_noise_across_prompts": True,
             "label": "current padded/truncated [B,77,768] conditioning",
-            "label_var": "official VLCP exact shared token length, raw-sliced at 77",
+            "label_var": (
+                "VLCP variable-length raw-slice protocol with the shared length selected "
+                "from actual CLIP token counts; this repairs the official whitespace-word "
+                "heuristic when it selects the token-shorter CFG branch"
+            ),
             "diffusers_src": str(Path(args.diffusers_src).resolve()),
         },
     }
     manifest_path = root / "run_manifest.json"
-    if manifest_path.is_file() and json.loads(manifest_path.read_text(encoding="utf-8")) != manifest:
-        raise RuntimeError(f"Resume configuration differs from {manifest_path}")
+    if manifest_path.is_file():
+        existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+        legacy = json.loads(json.dumps(manifest))
+        legacy["protocol"]["label_var"] = (
+            "official VLCP exact shared token length, raw-sliced at 77"
+        )
+        if existing not in (manifest, legacy):
+            raise RuntimeError(f"Resume configuration differs from {manifest_path}")
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     index_path = root / "evaluation_index.json"
     index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")

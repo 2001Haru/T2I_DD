@@ -41,6 +41,20 @@ class FakeTokenizer:
         return Tokenized(torch.tensor([ids], dtype=torch.long))
 
 
+class WordCountMismatchTokenizer(FakeTokenizer):
+    """Tokenize one whitespace word into more tokens than a three-word prompt."""
+
+    def __call__(self, text, return_tensors="pt", truncation=False, padding=None, max_length=None):
+        del return_tensors
+        content = list(range(2, 10)) if text == "subword-heavy" else [2, 3, 4]
+        ids = [1, *content, 99]
+        if truncation and max_length is not None:
+            ids = ids[:max_length]
+        if padding == "max_length":
+            ids = ids + [self.pad_token_id] * (max_length - len(ids))
+        return Tokenized(torch.tensor([ids], dtype=torch.long))
+
+
 class FakeEncoder:
     def __call__(self, ids):
         return (ids.float().unsqueeze(-1).repeat(1, 1, 3),)
@@ -191,6 +205,16 @@ class AssignmentTests(unittest.TestCase):
         self.assertEqual(expected, 7)
         self.assertEqual(tuple(positive.shape), (1, expected, 3))
         self.assertEqual(tuple(negative_embeds.shape), (1, expected, 3))
+
+    def test_official_exact_policy_uses_token_lengths_not_whitespace_counts(self):
+        pipe = FakePipe()
+        pipe.tokenizer = WordCountMismatchTokenizer()
+        positive, negative = get_pipeline_embeds(
+            pipe, "subword-heavy", "three word prompt", "cpu",
+            policy="official_exact",
+        )
+        self.assertEqual(tuple(positive.shape), (1, 10, 3))
+        self.assertEqual(tuple(negative.shape), (1, 10, 3))
 
     def test_matrix_has_eighteen_unique_cells(self):
         conditions = [item["condition"] for item in condition_matrix()]

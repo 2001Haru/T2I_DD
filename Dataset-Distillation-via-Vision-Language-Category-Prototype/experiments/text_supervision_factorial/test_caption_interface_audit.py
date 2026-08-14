@@ -17,8 +17,10 @@ from audit_caption_interface import (
     load_cluster_labels,
     mask_class_mentions,
     load_corpora,
+    ordering_diagnostic,
     probe_interface_deltas,
     summarize_audit,
+    summarize_ordering,
 )
 
 
@@ -82,6 +84,38 @@ class CaptionInterfaceAuditTests(unittest.TestCase):
         self.assertEqual(result["lost_content_tokens"], 3)
         self.assertEqual(result["inference_chunk_count"], 2)
         self.assertEqual(result["over_content_budget_75"], 1)
+
+    def test_ordering_diagnostic_separates_ordering_from_shape_failure(self):
+        # An ordinary shorter prompt selects the genuinely longer negative branch.
+        result = ordering_diagnostic(
+            FakeTokenizer(), "one two three four", "one two three four five six"
+        )
+        self.assertEqual(result["official_selected_branch"], "negative")
+        self.assertEqual(result["official_would_shape_mismatch"], 0)
+
+        # split(" ") counts the repeated-space empty field, while the tokenizer's
+        # split() does not. The official tie selects positive although negative is
+        # one CLIP token longer, which reproduces the unsafe branch precisely.
+        result = ordering_diagnostic(
+            FakeTokenizer(), "one  two", "one two three"
+        )
+        self.assertEqual(result["whitespace_words_prompt"], 3)
+        self.assertEqual(result["official_selected_branch"], "positive")
+        self.assertEqual(result["word_token_ordering_disagrees"], 1)
+        self.assertEqual(result["official_would_shape_mismatch"], 1)
+
+    def test_ordering_summary_reports_record_and_unique_counts(self):
+        base = {
+            "dataset": "nette", "condition": "label", "text": "same",
+            "word_token_ordering_disagrees": 1,
+            "official_branch_disagrees_with_token_max": 1,
+            "official_would_shape_mismatch": 1,
+        }
+        summary = summarize_ordering([base, dict(base)])
+        self.assertEqual(summary[0]["records"], 2)
+        self.assertEqual(summary[0]["unique_texts"], 1)
+        self.assertEqual(summary[0]["shape_mismatch_records"], 2)
+        self.assertEqual(summary[0]["shape_mismatch_unique_texts"], 1)
 
     def test_load_corpora_preserves_correct_shuffled_marginal(self):
         with tempfile.TemporaryDirectory() as temporary:
