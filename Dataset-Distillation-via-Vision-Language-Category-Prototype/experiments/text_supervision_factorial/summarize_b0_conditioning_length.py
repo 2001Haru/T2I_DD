@@ -79,6 +79,48 @@ def bootstrap_generation(rows, value_key, samples, seed):
     )
 
 
+def bootstrap_paired_checkpoint_difference(left, right, samples, seed):
+    """Bootstrap a checkpoint contrast over shared generations and repeat indices."""
+    common_generations = sorted(set(left) & set(right))
+    if not common_generations:
+        raise ValueError("Checkpoint contrast has no shared generation seeds")
+    for generation in common_generations:
+        if len(left[generation]) != len(right[generation]):
+            raise ValueError(
+                f"Classifier-repeat mismatch for generation seed {generation}: "
+                f"{len(left[generation])} != {len(right[generation])}"
+            )
+
+    paired = {
+        generation: [
+            left_value - right_value
+            for left_value, right_value in zip(left[generation], right[generation])
+        ]
+        for generation in common_generations
+    }
+    observed = [value for generation in common_generations for value in paired[generation]]
+    rng = random.Random(seed)
+    estimates = []
+    for _ in range(samples):
+        values = []
+        for _ in common_generations:
+            generation = rng.choice(common_generations)
+            differences = paired[generation]
+            values.extend(rng.choice(differences) for _ in differences)
+        estimates.append(statistics.fmean(values))
+    return {
+        "mean_difference": statistics.fmean(observed),
+        "bootstrap_ci95_lower": percentile(estimates, 0.025),
+        "bootstrap_ci95_upper": percentile(estimates, 0.975),
+        "bootstrap_ci90_lower": percentile(estimates, 0.05),
+        "bootstrap_ci90_upper": percentile(estimates, 0.95),
+        "shared_generation_seeds": ",".join(map(str, common_generations)),
+        "generation_cells": len(common_generations),
+        "paired_classifier_observations": len(observed),
+        "bootstrap_order": "shared generation seed -> paired classifier repeat",
+    }
+
+
 def write_csv(path, rows):
     if not rows:
         return
@@ -350,6 +392,32 @@ def main():
                 "generation_cells": len(selected), "classifier_observations": len(values),
             })
 
+    label_by_family = {}
+    for family in FAMILIES:
+        label_by_family[family] = {
+            generation_seed: lookup[(family, generation_seed, "label")]
+            for generation_seed in sorted({
+                row["generation_seed"] for row in cells
+                if row["checkpoint_family"] == family
+            })
+        }
+    checkpoint_contrasts = []
+    checkpoint_pairs = (
+        ("sparse_m4_ft_minus_label_ft", "sparse_m4_ft", "label_ft"),
+        ("sparse_m4_ft_minus_matched_ft", "sparse_m4_ft", "matched_ft"),
+        ("label_ft_minus_matched_ft", "label_ft", "matched_ft"),
+    )
+    for contrast_index, (name, left_family, right_family) in enumerate(checkpoint_pairs):
+        result = bootstrap_paired_checkpoint_difference(
+            label_by_family[left_family], label_by_family[right_family],
+            args.bootstrap_samples, 20260960 + contrast_index,
+        )
+        checkpoint_contrasts.append({
+            "contrast": name,
+            "inference_prompt": "label",
+            **result,
+        })
+
     contrasts = []
     for family_index, family in enumerate(FAMILIES):
         for contrast_index, (name, left, right) in enumerate(CONTRASTS):
@@ -518,6 +586,7 @@ def main():
         )
     write_csv(output / "performance.csv", performance)
     write_csv(output / "paired_contrasts.csv", contrasts)
+    write_csv(output / "cross_checkpoint_label_contrasts.csv", checkpoint_contrasts)
     write_csv(output / "caption_length_strata_summary.csv", strata_summary)
     write_csv(output / "guidance_branch_norms.csv", guidance_audit)
     write_csv(output / "guidance_branch_contrasts.csv", guidance_contrasts)
@@ -525,6 +594,7 @@ def main():
         "format_version": 3,
         "performance": performance,
         "paired_contrasts": contrasts,
+        "cross_checkpoint_label_contrasts": checkpoint_contrasts,
         "conditioning_length_audit": audit,
         "caption_length_strata_summary": strata_summary,
         "guidance_branch_norms": guidance_audit,
