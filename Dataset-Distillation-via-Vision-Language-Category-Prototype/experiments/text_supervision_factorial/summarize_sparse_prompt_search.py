@@ -5,6 +5,7 @@ import argparse
 import ast
 import csv
 import json
+import math
 import random
 import re
 import statistics
@@ -55,6 +56,97 @@ def hierarchical_bootstrap(rows, value_key, samples, seed=20260812):
                 drawn.extend(rng.choice(values) for _ in values)
         estimates.append(statistics.fmean(drawn))
     return percentile(estimates, 0.025), percentile(estimates, 0.975)
+
+
+def linear_slope(xs, ys):
+    x_mean = statistics.fmean(xs)
+    y_mean = statistics.fmean(ys)
+    denominator = sum((value - x_mean) ** 2 for value in xs)
+    if denominator <= 0:
+        raise ValueError("At least two distinct caption budgets are required for regression")
+    return sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys)) / denominator
+
+
+def paired_label_budget_bootstrap(rows, budgets, samples, seed=20261001):
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row["bank_seed"], {}).setdefault(row["generation_seed"], {})[
+            row["budget"]
+        ] = row["scores"]
+    bank_seeds = sorted(grouped)
+    if not bank_seeds:
+        raise ValueError("No Label rows available for budget analysis")
+    for bank_seed, generations in grouped.items():
+        for generation_seed, cells in generations.items():
+            missing = set(budgets) - set(cells)
+            if missing:
+                raise ValueError(
+                    f"Incomplete Label budget grid for bank={bank_seed}, "
+                    f"generation={generation_seed}: missing {sorted(missing)}"
+                )
+            repeat_counts = {len(cells[budget]) for budget in budgets}
+            if len(repeat_counts) != 1:
+                raise ValueError(
+                    f"Classifier-repeat mismatch across budgets for bank={bank_seed}, "
+                    f"generation={generation_seed}: {sorted(repeat_counts)}"
+                )
+
+    minimum, maximum = min(budgets), max(budgets)
+
+    def estimate(draw_rng=None):
+        differences, xs, ys = [], [], []
+        selected_banks = bank_seeds if draw_rng is None else [
+            draw_rng.choice(bank_seeds) for _ in bank_seeds
+        ]
+        for bank_seed in selected_banks:
+            generations = grouped[bank_seed]
+            generation_seeds = sorted(generations)
+            selected_generations = generation_seeds if draw_rng is None else [
+                draw_rng.choice(generation_seeds) for _ in generation_seeds
+            ]
+            for generation_seed in selected_generations:
+                cells = generations[generation_seed]
+                repeat_count = len(cells[budgets[0]])
+                repeat_indices = range(repeat_count) if draw_rng is None else [
+                    draw_rng.randrange(repeat_count) for _ in range(repeat_count)
+                ]
+                for repeat_index in repeat_indices:
+                    differences.append(
+                        cells[minimum][repeat_index] - cells[maximum][repeat_index]
+                    )
+                    for budget in budgets:
+                        xs.append(math.log2(budget))
+                        ys.append(cells[budget][repeat_index])
+        return statistics.fmean(differences), linear_slope(xs, ys)
+
+    point_difference, point_slope = estimate()
+    rng = random.Random(seed)
+    difference_estimates, slope_estimates = [], []
+    for _ in range(samples):
+        difference, slope = estimate(rng)
+        difference_estimates.append(difference)
+        slope_estimates.append(slope)
+    cells = sum(len(generations) for generations in grouped.values())
+    observations = sum(
+        len(cells_by_budget[budgets[0]])
+        for generations in grouped.values()
+        for cells_by_budget in generations.values()
+    )
+    return {
+        "minimum_budget": minimum,
+        "maximum_budget": maximum,
+        "m_min_minus_m_max_mean_difference": point_difference,
+        "m_min_minus_m_max_bootstrap_ci_lower": percentile(difference_estimates, 0.025),
+        "m_min_minus_m_max_bootstrap_ci_upper": percentile(difference_estimates, 0.975),
+        "log2_budget_slope": point_slope,
+        "log2_budget_slope_bootstrap_ci_lower": percentile(slope_estimates, 0.025),
+        "log2_budget_slope_bootstrap_ci_upper": percentile(slope_estimates, 0.975),
+        "bank_generation_cells": cells,
+        "paired_classifier_observations": observations,
+        "bootstrap_order": (
+            "bank seed -> generation seed -> shared classifier-repeat draw across budgets"
+        ),
+    }
 
 
 def write_csv(path, rows, fields):
@@ -144,6 +236,19 @@ def main():
                 "noninferior_within_1pt_by_95pct_ci": lower >= -1.0 - 1e-12,
             })
 
+    label_budget_analysis = []
+    budgets = sorted({row["budget"] for row in cells})
+    if "label" in available_prompts and len(budgets) >= 2:
+        result = paired_label_budget_bootstrap(
+            [row for row in cells if row["prompt"] == "label"],
+            budgets, args.bootstrap_samples,
+        )
+        label_budget_analysis.append({
+            "prompt": "label",
+            "budgets": ",".join(str(value) for value in budgets),
+            **result,
+        })
+
     write_csv(output / "performance_by_budget.csv", performance, performance[0].keys())
     write_csv(
         output / "bank_gain_by_budget.csv", contrasts,
@@ -159,11 +264,24 @@ def main():
             "bootstrap_ci_lower", "bootstrap_ci_upper", "noninferior_within_1pt_by_95pct_ci",
         ),
     )
+    write_csv(
+        output / "label_budget_regression.csv", label_budget_analysis,
+        label_budget_analysis[0].keys() if label_budget_analysis else (
+            "prompt", "budgets", "minimum_budget", "maximum_budget",
+            "m_min_minus_m_max_mean_difference",
+            "m_min_minus_m_max_bootstrap_ci_lower",
+            "m_min_minus_m_max_bootstrap_ci_upper", "log2_budget_slope",
+            "log2_budget_slope_bootstrap_ci_lower",
+            "log2_budget_slope_bootstrap_ci_upper", "bank_generation_cells",
+            "paired_classifier_observations", "bootstrap_order",
+        ),
+    )
     summary = {
-        "format_version": 1,
+        "format_version": 2,
         "performance": performance,
         "bank_minus_label": contrasts,
         "saturation": saturation,
+        "label_budget_analysis": label_budget_analysis,
         "bootstrap_order": "bank seed -> generation seed -> paired classifier repeat",
         "selection_design": "nested random class-caption banks",
         "available_prompts": available_prompts,

@@ -86,6 +86,39 @@ class SparsePromptSearchTests(unittest.TestCase):
             self.assertEqual(summary["bank_minus_label"], [])
             self.assertEqual(summary["saturation"], [])
 
+    def test_label_budget_summary_preserves_cross_budget_pairing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            rows = []
+            for bank_seed in (0, 1):
+                for generation_seed in (0, 1):
+                    for budget in (4, 8, 16, 32):
+                        log = root / f"b{bank_seed}_g{generation_seed}_m{budget}.log"
+                        offset = bank_seed + generation_seed
+                        value = 70 + offset + {4: 0, 8: 1, 16: 2, 32: 3}[budget]
+                        log.write_text(
+                            f"Best, last acc:----[{value}.0, {value + 2}.0]\n",
+                            encoding="utf-8",
+                        )
+                        rows.append({
+                            "bank_seed": bank_seed, "budget": budget,
+                            "generation_seed": generation_seed, "prompt": "label",
+                            "evaluation_log": str(log),
+                        })
+            index = root / "index.json"
+            index.write_text(json.dumps(rows), encoding="utf-8")
+            output = root / "summary"
+            subprocess.run([
+                sys.executable, str(HERE / "summarize_sparse_prompt_search.py"),
+                "--evaluation-index", str(index), "--output-dir", str(output),
+                "--bootstrap-samples", "200",
+            ], check=True)
+            summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
+            result = summary["label_budget_analysis"][0]
+            self.assertEqual(result["budgets"], "4,8,16,32")
+            self.assertAlmostEqual(result["m_min_minus_m_max_mean_difference"], -3.0)
+            self.assertAlmostEqual(result["log2_budget_slope"], 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()
