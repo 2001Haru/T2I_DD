@@ -14,6 +14,8 @@ from audit_caption_interface import (
     audit_row,
     evaluate_features,
     infer_synset,
+    load_cluster_labels,
+    mask_class_mentions,
     load_corpora,
     probe_interface_deltas,
     summarize_audit,
@@ -44,6 +46,29 @@ class CaptionInterfaceAuditTests(unittest.TestCase):
             "n02096294",
         )
         self.assertEqual(infer_synset("not_an_imagenet_file.JPEG"), "")
+
+    def test_cluster_assignments_support_flat_caption_names(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "assignments.csv"
+            path.write_text(
+                "image_path,assigned_cluster\n"
+                "/data/train/n02096294/n02096294_1424_n02096294.JPEG,3\n",
+                encoding="utf-8",
+            )
+            labels, reason = load_cluster_labels(path, [{
+                "relative": "n02096294_1424_n02096294.JPEG",
+                "synset": "n02096294",
+            }])
+        self.assertIsNone(reason)
+        self.assertEqual(labels, ["n02096294:3"])
+
+    def test_class_aliases_are_masked_without_removing_attributes(self):
+        masked = mask_class_mentions(
+            "A tench, Tinca tinca, is a long brown fish.", "n01440764"
+        )
+        self.assertNotIn("tench", masked.lower())
+        self.assertNotIn("tinca", masked.lower())
+        self.assertIn("long brown fish", masked.lower())
 
     def test_audit_uses_content_budget_and_reports_lost_tail(self):
         row = {

@@ -48,6 +48,15 @@ WOOF_BANK="${WOOF_BANK:-$(first_file \
   sparse_prompt_search_runs/sparse_m4_generality_v0/woof/train_seed_1/caption_banks/bank_seed_0/m_4.json \
   sparse_prompt_search_runs/sparse_m4_generality_v0/woof/train_seed_2/caption_banks/bank_seed_0/m_4.json)}" || true
 
+NETTE_ASSIGNMENTS="${NETTE_ASSIGNMENTS:-$(first_file \
+  schedule_matched_followup_runs/prototype_checkpoint_covariance_v0/retention_inputs/nette/latent_assignments.csv \
+  schedule_matched_followup_runs/schedule_matched_checkpoint_v1/retention_inputs/nette/latent_assignments.csv \
+  schedule_matched_followup_runs/schedule_matched_followup_v0/retention_inputs/nette/latent_assignments.csv)}" || true
+WOOF_ASSIGNMENTS="${WOOF_ASSIGNMENTS:-$(first_file \
+  schedule_matched_followup_runs/prototype_checkpoint_covariance_v0/retention_inputs/woof/latent_assignments.csv \
+  schedule_matched_followup_runs/schedule_matched_checkpoint_v1/retention_inputs/woof/latent_assignments.csv \
+  schedule_matched_followup_runs/schedule_matched_followup_v0/retention_inputs/woof/latent_assignments.csv)}" || true
+
 args=(
   --base-model "$BASE_MODEL"
   --dataset "nette=$NETTE_CAPTIONS"
@@ -62,8 +71,8 @@ if [[ -n "$NETTE_DCS" ]]; then args+=(--dcs "nette=$NETTE_DCS"); fi
 if [[ -n "$WOOF_DCS" ]]; then args+=(--dcs "woof=$WOOF_DCS"); fi
 if [[ -n "$NETTE_BANK" ]]; then args+=(--bank "nette=$NETTE_BANK"); fi
 if [[ -n "$WOOF_BANK" ]]; then args+=(--bank "woof=$WOOF_BANK"); fi
-if [[ -n "${NETTE_ASSIGNMENTS:-}" ]]; then args+=(--assignment "nette=$NETTE_ASSIGNMENTS"); fi
-if [[ -n "${WOOF_ASSIGNMENTS:-}" ]]; then args+=(--assignment "woof=$WOOF_ASSIGNMENTS"); fi
+if [[ -n "$NETTE_ASSIGNMENTS" ]]; then args+=(--assignment "nette=$NETTE_ASSIGNMENTS"); fi
+if [[ -n "$WOOF_ASSIGNMENTS" ]]; then args+=(--assignment "woof=$WOOF_ASSIGNMENTS"); fi
 if [[ "${SKIP_PROBE:-false}" == "true" ]]; then args+=(--skip-probe); fi
 if [[ "${FORCE_FEATURES:-false}" == "true" ]]; then args+=(--force-features); fi
 
@@ -73,6 +82,7 @@ printf '  base model: %s\n  Nette captions: %s\n  Woof captions: %s\n' \
 printf '  Nette DCS: %s\n  Woof DCS: %s\n  Nette bank: %s\n  Woof bank: %s\n' \
   "${NETTE_DCS:-<not found>}" "${WOOF_DCS:-<not found>}" \
   "${NETTE_BANK:-<not found>}" "${WOOF_BANK:-<not found>}"
+printf '  Nette assignments: %s\n  Woof assignments: %s\n' \
+  "${NETTE_ASSIGNMENTS:-<not found>}" "${WOOF_ASSIGNMENTS:-<not found>}"
 
 python experiments/text_supervision_factorial/audit_caption_interface.py "${args[@]}"
-

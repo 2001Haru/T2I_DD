@@ -184,6 +184,19 @@ def label_rows(dataset, synsets):
     } for synset in sorted(synsets)]
 
 
+def mask_class_mentions(text, synset):
+    aliases = [alias.strip() for alias in IMAGENET2012_CLASSES[synset].split(",")]
+    masked = str(text)
+    for alias in sorted((alias for alias in aliases if alias), key=len, reverse=True):
+        masked = re.sub(
+            rf"(?<![A-Za-z]){re.escape(alias)}(?![A-Za-z])",
+            " class-object ",
+            masked,
+            flags=re.IGNORECASE,
+        )
+    return re.sub(r"\s+", " ", masked).strip()
+
+
 def load_corpora(dataset_paths, dcs_paths, bank_paths):
     matched_by_dataset = {}
     all_rows = []
@@ -303,7 +316,13 @@ def write_csv(path, rows, fieldnames=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if fieldnames is None:
-        fieldnames = list(rows[0]) if rows else []
+        fieldnames = []
+        seen = set()
+        for row in rows:
+            for field in row:
+                if field not in seen:
+                    fieldnames.append(field)
+                    seen.add(field)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -505,6 +524,42 @@ def evaluate_features(features, labels, folds, seed, max_iter):
     return summary, fold_rows
 
 
+def evaluate_within_class_features(features, class_labels, cluster_labels, folds, seed, max_iter):
+    summaries = []
+    fold_rows = []
+    retained = 0
+    total = len(cluster_labels)
+    for class_key in sorted(set(class_labels)):
+        class_indices = np.flatnonzero(np.asarray(class_labels) == class_key)
+        counts = Counter(cluster_labels[index] for index in class_indices)
+        eligible = {label for label, count in counts.items() if count >= folds}
+        selected = np.asarray([
+            index for index in class_indices if cluster_labels[index] in eligible
+        ])
+        if len(eligible) < 2:
+            continue
+        summary, class_folds = evaluate_features(
+            features[selected], np.asarray(cluster_labels)[selected], folds, seed, max_iter
+        )
+        summary["class_key"] = class_key
+        summaries.append(summary)
+        fold_rows.extend({"class_key": class_key, **row} for row in class_folds)
+        retained += len(selected)
+    if not summaries:
+        raise ValueError("no class has at least two clusters eligible for cross-validation")
+    samples = sum(row["samples"] for row in summaries)
+    output = {
+        "samples": samples,
+        "classes": sum(row["classes"] for row in summaries),
+        "source_classes": len(summaries),
+        "eligible_fraction": retained / total,
+    }
+    for metric in ("top1", "balanced_accuracy", "macro_f1", "normalized_mi"):
+        # Class-balanced aggregation prevents large source classes from dominating.
+        output[metric] = float(np.mean([row[metric] for row in summaries]))
+    return output, fold_rows
+
+
 def normalize_relative(value):
     value = str(value).replace("\\", "/")
     marker = "/train/"
@@ -520,21 +575,39 @@ def load_cluster_labels(path, rows):
         return None, "assignment file is empty"
     fields = set(assignments[0])
     relative_field = next((field for field in ("relative", "relative_path", "image_path", "path") if field in fields), None)
-    cluster_field = next((field for field in ("replay_cluster_id", "cluster_index", "cluster_id", "voronoi_cluster_id") if field in fields), None)
+    cluster_field = next((field for field in (
+        "replay_cluster_id", "assigned_cluster", "cluster_index", "cluster_id",
+        "voronoi_cluster_id",
+    ) if field in fields), None)
     if relative_field is None or cluster_field is None:
         return None, f"unsupported assignment columns: {sorted(fields)}"
-    mapping = {
-        normalize_relative(row[relative_field]): str(int(float(row[cluster_field])))
-        for row in assignments if str(row.get(cluster_field, "")).strip()
-    }
+    mapping = {}
+    ambiguous = set()
+    for assignment in assignments:
+        if not str(assignment.get(cluster_field, "")).strip():
+            continue
+        cluster = str(int(float(assignment[cluster_field])))
+        normalized = normalize_relative(assignment[relative_field])
+        # Caption JSONLs may store only a flat basename while the assignment
+        # audit records an absolute train/synset path. Index both forms.
+        for key in {normalized, Path(normalized).name}:
+            previous = mapping.get(key)
+            if previous is not None and previous != cluster:
+                ambiguous.add(key)
+            else:
+                mapping[key] = cluster
+    for key in ambiguous:
+        mapping.pop(key, None)
     labels = []
     missing = []
     for row in rows:
-        key = normalize_relative(row["relative"])
-        if key not in mapping:
-            missing.append(key)
-        else:
-            labels.append(f"{row['synset']}:{mapping[key]}")
+        normalized = normalize_relative(row["relative"])
+        candidates = (normalized, Path(normalized).name)
+        cluster = next((mapping[key] for key in candidates if key in mapping), None)
+        if cluster is None:
+            missing.append(normalized)
+            continue
+        labels.append(f"{row['synset']}:{cluster}")
     if missing:
         return None, f"{len(missing)}/{len(rows)} caption rows absent from assignments"
     return labels, None
@@ -548,7 +621,13 @@ def run_probe(matched_by_dataset, assignment_paths, args, output_dir):
     status = {}
     for dataset, rows in matched_by_dataset.items():
         features_by_mode = load_or_encode(rows, dataset, args, cache_dir)
-        targets = {"class_id": [row["synset"] for row in rows]}
+        class_labels = [row["synset"] for row in rows]
+        targets = {"class_id": class_labels}
+        masked_rows = [
+            {**row, "text": mask_class_mentions(row["text"], row["synset"])}
+            for row in rows
+        ]
+        masked_features = load_or_encode(masked_rows, f"{dataset}_class_masked", args, cache_dir)
         if dataset in assignment_paths:
             cluster_labels, reason = load_cluster_labels(assignment_paths[dataset], rows)
             if cluster_labels is not None:
@@ -561,9 +640,15 @@ def run_probe(matched_by_dataset, assignment_paths, args, output_dir):
         for target_name, labels in targets.items():
             for mode, features in features_by_mode.items():
                 try:
-                    summary, fold_rows = evaluate_features(
-                        features, labels, args.folds, args.seed, args.max_iter
-                    )
+                    if target_name == "cluster_id_within_class":
+                        summary, fold_rows = evaluate_within_class_features(
+                            features, class_labels, labels, args.folds,
+                            args.seed, args.max_iter,
+                        )
+                    else:
+                        summary, fold_rows = evaluate_features(
+                            features, labels, args.folds, args.seed, args.max_iter
+                        )
                 except ValueError as error:
                     status[f"{dataset}:{target_name}:{mode}"] = f"skipped: {error}"
                     continue
@@ -575,6 +660,22 @@ def run_probe(matched_by_dataset, assignment_paths, args, output_dir):
                     "dataset": dataset, "target": target_name,
                     "text_interface": mode, **row,
                 } for row in fold_rows)
+        for mode, features in masked_features.items():
+            summary, masked_folds = evaluate_features(
+                features, class_labels, args.folds, args.seed, args.max_iter
+            )
+            summaries.append({
+                "dataset": dataset, "target": "class_id_masked",
+                "text_interface": mode, **summary,
+            })
+            folds.extend({
+                "dataset": dataset, "target": "class_id_masked",
+                "text_interface": mode, **row,
+            } for row in masked_folds)
+        status[f"{dataset}:class_id"] = (
+            "sanity check only: captions explicitly contain class names"
+        )
+        status[f"{dataset}:class_id_masked"] = "evaluated after masking WordNet aliases"
     write_csv(output_dir / "caption_probe_summary.csv", summaries)
     write_csv(output_dir / "caption_probe_folds.csv", folds)
     deltas = probe_interface_deltas(summaries)
@@ -620,7 +721,12 @@ def plot_probe(rows, output_path):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    class_rows = [row for row in rows if row["target"] == "class_id"]
+    primary_target = (
+        "cluster_id_within_class"
+        if any(row["target"] == "cluster_id_within_class" for row in rows)
+        else "class_id"
+    )
+    class_rows = [row for row in rows if row["target"] == primary_target]
     datasets = sorted({row["dataset"] for row in class_rows})
     metrics = ("top1", "macro_f1", "normalized_mi")
     figure, axes = plt.subplots(1, len(metrics), figsize=(15, 4.6))
@@ -628,8 +734,8 @@ def plot_probe(rows, output_path):
     x = np.arange(len(datasets))
     for axis, metric in zip(axes, metrics):
         for offset, mode in (
-            (-width / 2, "train_t77_pooled"),
-            (width / 2, "inference_chunked_pooled"),
+            (-width / 2, "train_t77_mean_hidden"),
+            (width / 2, "inference_chunked_mean_hidden"),
         ):
             values = [next(
                 row[metric] for row in class_rows
@@ -640,7 +746,9 @@ def plot_probe(rows, output_path):
         axis.set_ylim(0, 1)
         axis.set_title(metric)
     axes[0].legend()
-    figure.suptitle("Caption class recoverability in the SD1.5 text encoder")
+    figure.suptitle(
+        f"Caption {primary_target} recoverability in SD1.5 conditioning states"
+    )
     figure.tight_layout()
     figure.savefig(output_path, dpi=180)
     plt.close(figure)
@@ -689,9 +797,10 @@ def main():
         "training_interface": "single CLIP chunk with max_length=77 and truncation=True",
         "inference_interface": "untruncated CLIP IDs split into 77-token chunks",
         "probe_representation_boundary": (
-            "Pooled probes use CLIP pooler_output; multi-chunk pooled features are active-token-"
-            "weighted means of chunk pooler outputs. Mean-hidden probes are also reported and "
-            "align more directly with the hidden states consumed by generation."
+            "Mean-hidden probes are primary because generation concatenates last_hidden_state "
+            "chunks and sends them to the U-Net. Pooled probes are secondary diagnostics only: "
+            "the diffusion pipeline never consumes pooler_output, and averaging chunk-level "
+            "pooler outputs is not an operational generation interface."
         ),
         "attribute_metric_boundary": (
             "attribute_proxy uses a fixed physical-attribute lexicon and adjective-like suffixes; "
