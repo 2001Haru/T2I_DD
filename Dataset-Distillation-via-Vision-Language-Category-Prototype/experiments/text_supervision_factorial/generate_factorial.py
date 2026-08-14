@@ -31,6 +31,8 @@ GENERATION_PROMPT_MODES = PROMPT_MODES + (
     "first_sentence",
     "correct_t77",
     "label_pad_dcs",
+    "correct_t77_pad_dcs",
+    "correct_head_pad_dcs",
 )
 
 
@@ -54,6 +56,10 @@ def parse_args():
     )
     parser.add_argument("--guidance-scale", type=float, default=10.0)
     parser.add_argument("--num-inference-steps", type=int, default=50)
+    parser.add_argument(
+        "--guidance-diagnostic-timesteps", type=int, nargs="+", default=(),
+        help="Requested training timesteps for paired CFG branch-norm diagnostics",
+    )
     parser.add_argument("--negative-prompt", default="cartoon, anime, painting")
     parser.add_argument("--shuffle-shift", type=int, default=1)
     parser.add_argument("--size", type=int, default=256)
@@ -120,22 +126,48 @@ def get_pipeline_embeds(
         ).input_ids.to(device)
         return pipe.text_encoder(prompt_ids)[0], pipe.text_encoder(negative_ids)[0]
 
-    if policy == "pad_extended":
+    if policy in {"pad_extended", "single_pad_extended"}:
         if target_chunks is None or target_chunks < 1:
-            raise ValueError("pad_extended requires target_chunks >= 1")
+            raise ValueError(f"{policy} requires target_chunks >= 1")
         prompt_embeds, negative_embeds = get_pipeline_embeds(
             pipe, prompt, negative_prompt, device, policy="single"
         )
         if target_chunks == 1:
             return prompt_embeds, negative_embeds
-        pad_ids = torch.full(
-            (1, chunk), pipe.tokenizer.pad_token_id, dtype=torch.long, device=device
-        )
-        pad_embeds = pipe.text_encoder(pad_ids)[0]
-        padding = [pad_embeds] * (target_chunks - 1)
+        length = target_chunks * chunk
+        negative_ids = pipe.tokenizer(
+            negative_prompt, padding="max_length", max_length=length, truncation=False,
+            return_tensors="pt",
+        ).input_ids.to(device)
+        negative_tail = [
+            pipe.text_encoder(negative_ids[:, start:start + chunk])[0]
+            for start in range(chunk, length, chunk)
+        ]
         return (
-            torch.cat([prompt_embeds, *padding], dim=1),
-            torch.cat([negative_embeds, *padding], dim=1),
+            torch.cat([prompt_embeds, *negative_tail], dim=1),
+            torch.cat([negative_embeds, *negative_tail], dim=1),
+        )
+
+    if policy == "chunk_head_pad_extended":
+        if target_chunks is None or target_chunks < 1:
+            raise ValueError("chunk_head_pad_extended requires target_chunks >= 1")
+        length = target_chunks * chunk
+        prompt_ids = pipe.tokenizer(
+            prompt, padding="max_length", max_length=length, truncation=False,
+            return_tensors="pt",
+        ).input_ids.to(device)
+        negative_ids = pipe.tokenizer(
+            negative_prompt, padding="max_length", max_length=length, truncation=False,
+            return_tensors="pt",
+        ).input_ids.to(device)
+        prompt_head = pipe.text_encoder(prompt_ids[:, :chunk])[0]
+        negative_chunks = [
+            pipe.text_encoder(negative_ids[:, start:start + chunk])[0]
+            for start in range(0, length, chunk)
+        ]
+        return (
+            torch.cat([prompt_head, *negative_chunks[1:]], dim=1),
+            torch.cat(negative_chunks, dim=1),
         )
 
     if policy != "chunked":
@@ -172,6 +204,10 @@ def prompt_for(synset, index, image_index, mode, dcs, shift, prompt_bank):
         return correct, index, None, "single", correct
     if mode == "label_pad_dcs":
         return IMAGENET2012_CLASSES[synset], None, None, "pad_extended", correct
+    if mode == "correct_t77_pad_dcs":
+        return correct, index, None, "single_pad_extended", correct
+    if mode == "correct_head_pad_dcs":
+        return correct, index, None, "chunk_head_pad_extended", correct
     if mode == "bank":
         entries = prompt_bank["classes"][synset]
         source = image_index % len(entries)
@@ -194,9 +230,91 @@ def schedule_matched_noise(prototype_data, image_seed, device, dtype=torch.float
     ).unsqueeze(0)
 
 
+def planned_guidance_timesteps(pipe, args):
+    """Map requested training timesteps to the nearest timestep this call executes."""
+    if not args.guidance_diagnostic_timesteps:
+        return {}
+    pipe.scheduler.set_timesteps(args.num_inference_steps, device=args.device)
+    timesteps = pipe.scheduler.timesteps
+    if args.visual_mode in {"prototype", "schedule_matched_noise"}:
+        init_steps = min(int(args.num_inference_steps * args.strength), args.num_inference_steps)
+        start = max(args.num_inference_steps - init_steps, 0) * getattr(pipe.scheduler, "order", 1)
+        timesteps = timesteps[start:]
+    actual = [int(value.item()) for value in timesteps]
+    if not actual:
+        raise RuntimeError("No diffusion timestep is executed by the requested visual schedule")
+    return {
+        requested: min(actual, key=lambda value: (abs(value - requested), value))
+        for requested in args.guidance_diagnostic_timesteps
+    }
+
+
+def epsilon_branch_metrics(sample):
+    """Return independent conditional, unconditional, and CFG-residual magnitudes."""
+    if sample.ndim < 2 or sample.shape[0] % 2:
+        raise RuntimeError(f"Expected an even CFG batch, got {tuple(sample.shape)}")
+    unconditional, conditional = sample.float().chunk(2)
+
+    def magnitudes(value):
+        flattened = value.flatten(1)
+        return {
+            "l2": torch.linalg.vector_norm(flattened, dim=1).mean().item(),
+            "rms": flattened.square().mean(dim=1).sqrt().mean().item(),
+        }
+
+    residual = conditional - unconditional
+    return {
+        "epsilon_cond": magnitudes(conditional),
+        "epsilon_uncond": magnitudes(unconditional),
+        "epsilon_residual": magnitudes(residual),
+    }
+
+
+def run_with_guidance_diagnostics(pipe, call_args, requested_to_actual):
+    diagnostics = []
+    actual_to_requested = {}
+    for requested, actual in requested_to_actual.items():
+        actual_to_requested.setdefault(actual, []).append(requested)
+    captured = set()
+
+    def hook(_module, inputs, output):
+        if len(inputs) < 2:
+            return
+        timestep = inputs[1]
+        actual = int(timestep.flatten()[0].item()) if torch.is_tensor(timestep) else int(timestep)
+        if actual not in actual_to_requested or actual in captured:
+            return
+        sample = output.sample if hasattr(output, "sample") else output[0]
+        metrics = epsilon_branch_metrics(sample)
+        for requested in actual_to_requested[actual]:
+            diagnostics.append({
+                "requested_timestep": requested,
+                "actual_timestep": actual,
+                "absolute_timestep_error": abs(actual - requested),
+                "exact_requested_timestep": actual == requested,
+                **{
+                    f"{branch}_{magnitude}": value
+                    for branch, values in metrics.items()
+                    for magnitude, value in values.items()
+                },
+            })
+        captured.add(actual)
+
+    handle = pipe.unet.register_forward_hook(hook)
+    try:
+        result = pipe(**call_args)
+    finally:
+        handle.remove()
+    missing = sorted(set(requested_to_actual.values()) - captured)
+    if missing:
+        raise RuntimeError(f"UNet hook missed planned diagnostic timesteps: {missing}")
+    return result, sorted(diagnostics, key=lambda row: row["requested_timestep"])
+
+
 def generate(pipe, prototypes, dcs, prompt_bank, supervision, prompt_mode, generation_seed, output_dir, args):
     records = []
     completed = 0
+    requested_to_actual = planned_guidance_timesteps(pipe, args)
     for class_index, (synset, values) in enumerate(prototypes.items()):
         class_dir = output_dir / synset
         class_dir.mkdir(parents=True, exist_ok=True)
@@ -211,11 +329,13 @@ def generate(pipe, prototypes, dcs, prompt_bank, supervision, prompt_mode, gener
                 reference_dcs_chunks = text_chunk_count(pipe.tokenizer, reference_dcs)
                 conditioning_chunks = (
                     reference_dcs_chunks
-                    if embedding_policy == "pad_extended"
+                    if embedding_policy in {
+                        "pad_extended", "single_pad_extended", "chunk_head_pad_extended"
+                    }
                     else (1 if embedding_policy == "single" else text_chunk_count(pipe.tokenizer, prompt))
                 )
                 image_seed = stable_image_seed(generation_seed, class_index, image_index)
-                records.append({
+                record = {
                     "synset": synset,
                     "image_index": image_index,
                     "prototype_index": prototype_index,
@@ -227,10 +347,19 @@ def generate(pipe, prototypes, dcs, prompt_bank, supervision, prompt_mode, gener
                     "conditioning_sequence_length": conditioning_chunks * pipe.tokenizer.model_max_length,
                     "reference_dcs": reference_dcs,
                     "reference_dcs_chunks": reference_dcs_chunks,
+                    "chunk_count_unit": "individual_prompt_not_batch_max",
                     "image_seed": image_seed,
-                })
+                }
                 destination = class_dir / f"image_{image_index:05d}.png"
-                if destination.is_file():
+                diagnostic_path = class_dir / f"image_{image_index:05d}.guidance.json"
+                if destination.is_file() and (
+                    not requested_to_actual or diagnostic_path.is_file()
+                ):
+                    if requested_to_actual:
+                        record["guidance_diagnostics"] = json.loads(
+                            diagnostic_path.read_text(encoding="utf-8")
+                        )["guidance_diagnostics"]
+                    records.append(record)
                     completed += 1
                     continue
                 prompt_embeds, negative_embeds = get_pipeline_embeds(
@@ -267,8 +396,20 @@ def generate(pipe, prototypes, dcs, prompt_bank, supervision, prompt_mode, gener
                 else:
                     call_args["height"] = args.size
                     call_args["width"] = args.size
-                image = pipe(**call_args).images[0]
+                if requested_to_actual:
+                    result, diagnostics = run_with_guidance_diagnostics(
+                        pipe, call_args, requested_to_actual
+                    )
+                    record["guidance_diagnostics"] = diagnostics
+                    atomic_write_json(diagnostic_path, {
+                        "requested_to_actual_timestep": requested_to_actual,
+                        "guidance_diagnostics": diagnostics,
+                    })
+                else:
+                    result = pipe(**call_args)
+                image = result.images[0]
                 image.resize((args.size, args.size)).save(destination)
+                records.append(record)
                 completed += 1
                 print(f"[{supervision}/{prompt_mode} seed={generation_seed}] {completed}/{len(prototypes) * args.ipc}")
     return records, completed
@@ -312,7 +453,7 @@ def main():
                 )
                 output_dir = output_root / f"seed_{generation_seed}" / condition
                 manifest = {
-                    "format_version": 2,
+                    "format_version": 3,
                     "condition": condition,
                     "supervision_mode": supervision,
                     "prompt_mode": prompt_mode,
@@ -336,15 +477,29 @@ def main():
                     ),
                     "guidance_scale": args.guidance_scale,
                     "num_inference_steps": args.num_inference_steps,
+                    "guidance_diagnostic_timesteps": list(args.guidance_diagnostic_timesteps),
+                    "guidance_diagnostic_definition": (
+                        "At the nearest actually executed scheduler timestep to each requested "
+                        "training timestep, record separate conditional, unconditional, and "
+                        "conditional-minus-unconditional UNet output L2 and RMS magnitudes."
+                        if args.guidance_diagnostic_timesteps else None
+                    ),
                     "negative_prompt": args.negative_prompt,
                     "shuffle_shift": args.shuffle_shift,
                     "paired_noise_across_all_cells": True,
                     "conditioning_length_control": (
-                        "label_pad_dcs appends text-encoder outputs from all-pad token blocks "
-                        "along sequence dimension to match the paired correct DCS chunk count; "
-                        "positive and negative branches have identical sequence lengths"
-                        if prompt_mode == "label_pad_dcs"
+                        "Length-matched controls append padding-derived blocks along sequence "
+                        "dimension to match paired correct-DCS chunk count. correct_head_pad_dcs "
+                        "uses the exact raw-sliced first block from full DCS and replaces only "
+                        "later positive blocks with the corresponding negative-tail blocks."
+                        if prompt_mode in {
+                            "label_pad_dcs", "correct_t77_pad_dcs", "correct_head_pad_dcs"
+                        }
                         else None
+                    ),
+                    "chunk_count_unit": (
+                        "computed independently for each sampled caption before its one-image "
+                        "pipeline call; never derived from a batch maximum"
                     ),
                 }
                 ensure_manifest(output_dir, manifest, resume=args.resume)
