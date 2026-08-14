@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the paired padded-77 versus token-max variable-length raw-Label check."""
+"""Run paired raw-Label length controls plus the existing correct-DCS t77 arm."""
 
 import argparse
 import json
@@ -14,7 +14,7 @@ from run_sparse_interface_transfer import acquire_run_lock, append_scheduler_eve
 
 
 HERE = Path(__file__).resolve().parent
-PROMPTS = ("label", "raw_label_tokenmax_var")
+PROMPTS = ("label", "raw_label_tokenmax_var", "correct_t77")
 
 
 def parse_args():
@@ -123,8 +123,10 @@ def main():
     root.mkdir(parents=True, exist_ok=True)
     lock = acquire_run_lock(root)
     tasks, index = build_tasks(args)
+    if any(not task.complete() for task in tasks.values()):
+        (root / "COMPLETE").unlink(missing_ok=True)
     manifest = {
-        "format_version": 2,
+        "format_version": 3,
         "experiment": "label_length_protocol",
         "preregistered_primary": "raw_label_tokenmax_var_minus_raw_label_pad77",
         "protocol": {
@@ -142,6 +144,10 @@ def main():
                 "padded to max(positive CLIP tokens, negative CLIP tokens); deterministic "
                 "per prompt and independent of batch composition"
             ),
+            "correct_t77": (
+                "the paired cluster-specific Correct DCS caption truncated/padded to one "
+                "77-position SD1.5 CLIP block"
+            ),
             "official_whitespace_heuristic": (
                 "audited only; never used for generation because it can select the "
                 "token-shorter CFG branch"
@@ -152,7 +158,10 @@ def main():
     manifest_path = root / "run_manifest.json"
     if manifest_path.is_file():
         existing = json.loads(manifest_path.read_text(encoding="utf-8"))
-        if existing != manifest:
+        legacy = json.loads(json.dumps(manifest))
+        legacy["format_version"] = 2
+        legacy["protocol"].pop("correct_t77")
+        if existing not in (manifest, legacy):
             raise RuntimeError(f"Resume configuration differs from {manifest_path}")
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     index_path = root / "evaluation_index.json"

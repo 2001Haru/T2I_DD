@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize padded-77 versus token-max variable-length raw-Label conditioning."""
+"""Summarize raw-Label length controls and the paired Correct-DCS t77 arm."""
 
 import argparse
 import ast
@@ -12,7 +12,12 @@ from pathlib import Path
 
 
 RESULT = re.compile(r"Best, last acc:----(\[[^\]]+\])")
-PROMPTS = ("label", "raw_label_tokenmax_var")
+PROMPTS = ("label", "raw_label_tokenmax_var", "correct_t77")
+PROTOCOL_NAMES = {
+    "label": "raw_label_pad77",
+    "raw_label_tokenmax_var": "raw_label_tokenmax_var",
+    "correct_t77": "correct_dcs_t77",
+}
 
 
 def parse_args():
@@ -92,26 +97,43 @@ def main():
         flat = [value for values in by_prompt[prompt].values() for value in values]
         performance.append({
             "prompt": prompt,
-            "conditioning_protocol": (
-                "raw_label_pad77" if prompt == "label" else "raw_label_tokenmax_var"
-            ),
+            "conditioning_protocol": PROTOCOL_NAMES[prompt],
             "mean_accuracy": statistics.fmean(flat),
             "generation_cells": len(by_prompt[prompt]),
             "classifier_observations": len(flat),
         })
 
     variable_prompt = "raw_label_tokenmax_var"
-    generations = sorted(set(by_prompt["label"]) & set(by_prompt[variable_prompt]))
-    paired = {}
-    for seed in generations:
-        padded = by_prompt["label"][seed]
-        variable = by_prompt[variable_prompt][seed]
-        if len(padded) != len(variable):
-            raise ValueError(f"Classifier repeat mismatch at generation seed {seed}")
-        paired[seed] = [right - left for right, left in zip(variable, padded)]
-    primary = bootstrap_paired(paired, args.bootstrap_samples)
+    generations = sorted(set.intersection(*(set(by_prompt[prompt]) for prompt in PROMPTS)))
+
+    def paired_contrast(left_prompt, right_prompt, name, seed_offset=0):
+        paired = {}
+        for seed in generations:
+            left = by_prompt[left_prompt][seed]
+            right = by_prompt[right_prompt][seed]
+            if len(left) != len(right):
+                raise ValueError(f"Classifier repeat mismatch at generation seed {seed}")
+            paired[seed] = [right_value - left_value for right_value, left_value in zip(right, left)]
+        result = bootstrap_paired(paired, args.bootstrap_samples, seed=20260814 + seed_offset)
+        result["contrast"] = name
+        result["population"] = "all_classes"
+        return result
+
+    primary = paired_contrast(
+        "label", variable_prompt,
+        "raw_label_tokenmax_var_minus_raw_label_pad77",
+    )
     primary["contrast"] = "raw_label_tokenmax_var_minus_raw_label_pad77"
-    primary["population"] = "all_classes"
+    semantic_contrasts = [
+        paired_contrast(
+            "label", "correct_t77",
+            "correct_dcs_t77_minus_raw_label_pad77", 10,
+        ),
+        paired_contrast(
+            variable_prompt, "correct_t77",
+            "correct_dcs_t77_minus_raw_label_tokenmax_var", 20,
+        ),
+    ]
 
     sequence_rows = []
     run_root = index_path.parent
@@ -191,15 +213,17 @@ def main():
         population_contrasts.append(result)
 
     write_csv(output / "performance.csv", performance)
-    write_csv(output / "paired_contrast.csv", population_contrasts)
+    all_contrasts = population_contrasts + semantic_contrasts
+    write_csv(output / "paired_contrast.csv", all_contrasts)
     write_csv(output / "conditioning_lengths.csv", sequence_rows)
     write_csv(output / "label_length_by_class.csv", list(protocol_rows.values()))
     report_lines = [
-        "# Raw-label conditioning-length report",
+        "# Raw-label conditioning-length and Correct-DCS t77 report",
         "",
         "- Positive condition: exact ImageNet class string.",
         "- Negative condition: `cartoon, anime, painting`.",
         "- Variable arm: both branches padded to the larger actual CLIP-token length.",
+        "- Correct-DCS t77 arm: paired cluster-specific caption in one 77-position block.",
         "- Official whitespace heuristic is audited but never used for generation.",
         "",
         "## Paired downstream contrasts",
@@ -207,7 +231,7 @@ def main():
         "| Population | Classes | Mean | 95% CI |",
         "|---|---:|---:|---:|",
     ]
-    for row in population_contrasts:
+    for row in all_contrasts:
         report_lines.append(
             f"| {row['population']} | {row.get('classes', len(all_classes))} | "
             f"{row['mean_difference']:.3f} | "
@@ -230,6 +254,7 @@ def main():
         "performance": performance,
         "primary": primary,
         "population_sensitivity": population_contrasts,
+        "semantic_contrasts": semantic_contrasts,
         "conditioning_lengths": sequence_rows,
         "official_heuristic_audit": {
             "ordering_disagreement_classes": sum(
