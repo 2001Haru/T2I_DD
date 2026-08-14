@@ -49,7 +49,7 @@ class ConditioningInterfaceMatrixTests(unittest.TestCase):
             matrices=("A", "B", "C"), training_seeds=(0, 1), generation_seeds=(0, 1),
             woof_phases=("ladder", "curve_ipc10_20", "curve_ipc50"),
             guidance_scale=10.0, num_inference_steps=50, classifier_repeats=2,
-            classifier_seed=0, train_batch_size=4, gradient_accumulation_steps=8,
+            classifier_seed=0, train_batch_size=8, gradient_accumulation_steps=4,
             num_workers=2, mixed_precision="fp16", diffusers_src="",
         )
 

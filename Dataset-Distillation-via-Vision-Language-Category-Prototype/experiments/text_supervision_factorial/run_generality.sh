@@ -52,7 +52,7 @@ args=(
   --generation-seeds "${generation_args[@]}" --new-training-seeds "${new_seed_args[@]}"
   --ipc-training-seeds "${ipc_seed_args[@]}" --woof-training-seeds "${woof_seed_args[@]}"
   --ipc-values "${ipc_args[@]}" --classifier-repeats "$CLASSIFIER_REPEATS"
-  --train-batch-size 4 --gradient-accumulation-steps 8 --num-workers "$NUM_WORKERS"
+  --train-batch-size 8 --gradient-accumulation-steps 4 --num-workers "$NUM_WORKERS"
   --mixed-precision fp16 --max-parallel-evals 1
 )
 [[ -n "$DIFFUSERS_SRC" ]] && args+=(--diffusers-src "$DIFFUSERS_SRC")

@@ -68,7 +68,7 @@ class GeneralityTests(unittest.TestCase):
                 woof_data_root=None, woof_caption_file=None, phases=("nette_ipc",), gpus="0,1",
                 new_training_seeds=(2, 3), ipc_training_seeds=(0,), woof_training_seeds=(0, 1),
                 generation_seeds=(0,), ipc_values=(20,), classifier_repeats=2, classifier_seed=0,
-                train_batch_size=4, gradient_accumulation_steps=8, num_workers=2,
+                train_batch_size=8, gradient_accumulation_steps=4, num_workers=2,
                 mixed_precision="fp16", max_parallel_evals=1, retry_delay_seconds=1, max_retries=1,
                 diffusers_src="",
             )

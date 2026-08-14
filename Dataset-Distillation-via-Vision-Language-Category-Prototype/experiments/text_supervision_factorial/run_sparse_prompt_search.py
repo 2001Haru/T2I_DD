@@ -57,8 +57,8 @@ def parse_args():
     parser.add_argument("--strength", type=float, default=0.8)
     parser.add_argument("--classifier-repeats", type=int, default=2)
     parser.add_argument("--classifier-seed", type=int, default=0)
-    parser.add_argument("--train-batch-size", type=int, default=4)
-    parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
+    parser.add_argument("--train-batch-size", type=int, default=8)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--mixed-precision", choices=("no", "fp16", "bf16"), default="fp16")
     parser.add_argument("--retry-delay-seconds", type=int, default=120)
@@ -225,8 +225,8 @@ def main():
     gpus = [gpu.strip() for gpu in args.gpus.split(",") if gpu.strip()]
     if not gpus:
         raise ValueError("At least one GPU is required")
-    if args.train_batch_size * args.gradient_accumulation_steps != 32:
-        raise ValueError("Effective one-GPU fine-tuning batch must remain 32")
+    if (args.train_batch_size, args.gradient_accumulation_steps) != (8, 4):
+        raise ValueError("VLCP training protocol requires micro-batch 8 and gradient accumulation 4")
     for path in (args.data_root, args.caption_file, args.base_model, args.prototype, args.dcs):
         if not Path(path).exists():
             raise FileNotFoundError(path)

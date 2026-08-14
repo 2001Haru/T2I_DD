@@ -62,8 +62,8 @@ def parse_args():
     parser.add_argument("--ipc-values", type=int, nargs="+", default=(20, 50))
     parser.add_argument("--classifier-repeats", type=int, default=2)
     parser.add_argument("--classifier-seed", type=int, default=0)
-    parser.add_argument("--train-batch-size", type=int, default=4)
-    parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
+    parser.add_argument("--train-batch-size", type=int, default=8)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--mixed-precision", choices=("no", "fp16", "bf16"), default="fp16")
     parser.add_argument("--max-parallel-evals", type=int, default=1)
@@ -426,8 +426,8 @@ def main():
     gpus = [item.strip() for item in args.gpus.split(",") if item.strip()]
     if not gpus:
         raise ValueError("At least one GPU is required")
-    if args.train_batch_size * args.gradient_accumulation_steps != 32:
-        raise ValueError("Each one-GPU fine-tune must keep effective batch size 32")
+    if (args.train_batch_size, args.gradient_accumulation_steps) != (8, 4):
+        raise ValueError("VLCP training protocol requires micro-batch 8 and gradient accumulation 4")
     run_root = Path(args.run_root).resolve()
     run_root.mkdir(parents=True, exist_ok=True)
     validate_subset(args.nette_data_root, "nette", args.nette_caption_file)

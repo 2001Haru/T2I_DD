@@ -61,8 +61,8 @@ def parse_args():
     parser.add_argument("--generation-seeds", type=int, nargs="+", default=(0, 1))
     parser.add_argument("--classifier-repeats", type=int, default=2)
     parser.add_argument("--classifier-seed", type=int, default=0)
-    parser.add_argument("--train-batch-size", type=int, default=4)
-    parser.add_argument("--gradient-accumulation-steps", type=int, default=8)
+    parser.add_argument("--train-batch-size", type=int, default=8)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--mixed-precision", choices=("no", "fp16", "bf16"), default="fp16")
     parser.add_argument("--constant-prompt", default="A natural photo.")
@@ -247,8 +247,8 @@ def main():
     gpus = [item.strip() for item in args.gpus.split(",") if item.strip()]
     if len(gpus) != 4:
         raise ValueError(f"This scheduler requires exactly four GPU ids, got {gpus}")
-    if args.train_batch_size * args.gradient_accumulation_steps != 32:
-        raise ValueError("Each one-GPU fine-tune must keep effective batch size 32")
+    if (args.train_batch_size, args.gradient_accumulation_steps) != (8, 4):
+        raise ValueError("VLCP training protocol requires micro-batch 8 and gradient accumulation 4")
     run_root = Path(args.run_root).resolve()
     base_run = Path(args.base_run_root).resolve()
     run_root.mkdir(parents=True, exist_ok=True)

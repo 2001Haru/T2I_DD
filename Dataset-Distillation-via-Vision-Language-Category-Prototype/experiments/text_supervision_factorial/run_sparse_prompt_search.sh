@@ -26,8 +26,8 @@ python experiments/text_supervision_factorial/run_sparse_prompt_search.py \
   --ipc 50 \
   --strength 0.8 \
   --classifier-repeats 2 \
-  --train-batch-size 4 \
-  --gradient-accumulation-steps 8 \
+  --train-batch-size 8 \
+  --gradient-accumulation-steps 4 \
   --num-workers 2 \
   --mixed-precision fp16 \
   --max-retries 0 \

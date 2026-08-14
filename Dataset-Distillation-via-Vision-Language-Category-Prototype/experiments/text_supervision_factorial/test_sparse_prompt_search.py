@@ -55,7 +55,7 @@ class SparsePromptSearchTests(unittest.TestCase):
                 caption_file=str(root / "captions.jsonl"), base_model=str(root / "sd15"),
                 prototype=str(root / "prototype.json"), dcs=str(root / "dcs.json"),
                 ipc=50, strength=0.8, classifier_repeats=2, classifier_seed=0,
-                train_batch_size=4, gradient_accumulation_steps=8, num_workers=2,
+                train_batch_size=8, gradient_accumulation_steps=4, num_workers=2,
                 mixed_precision="fp16",
             )
             tasks, index = build_tasks(args)

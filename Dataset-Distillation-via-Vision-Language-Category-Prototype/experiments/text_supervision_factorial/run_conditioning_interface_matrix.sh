@@ -63,7 +63,7 @@ args=(
   --woof-phases "${woof_phase_args[@]}" --max-walltime-hours "$MAX_WALLTIME_HOURS"
   --training-seeds "${training_seed_args[@]}" --generation-seeds "${generation_seed_args[@]}"
   --classifier-repeats "$CLASSIFIER_REPEATS" --max-parallel-evals "$MAX_PARALLEL_EVALS"
-  --train-batch-size 4 --gradient-accumulation-steps 8 --num-workers "$NUM_WORKERS"
+  --train-batch-size 8 --gradient-accumulation-steps 4 --num-workers "$NUM_WORKERS"
   --mixed-precision fp16
 )
 if [[ " $MATRICES " == *" C "* ]]; then
