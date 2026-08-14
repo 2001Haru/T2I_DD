@@ -438,3 +438,35 @@ The historical base run contains only training seed 0, so this quick control
 defaults to `TRAINING_SEEDS=0`. Legacy summaries that omit the seed field are
 accepted with an audit warning; an explicitly recorded mismatched seed remains
 fatal. Override with `TRAINING_SEEDS="0 1"` only when both checkpoint sets exist.
+# Caption-interface audit (Step 0 and Step 0.5)
+
+Run the token-length audit and frozen SD1.5 CLIP caption probes without starting
+any generator fine-tuning:
+
+```bash
+BASE_MODEL=/linxi/models/VLCP/stable-diffusion-v1-5 \
+NETTE_DATA_ROOT=/linxi/dataset/VLCP/ImageNette \
+WOOF_DATA_ROOT=/linxi/dataset/VLCP/ImageWoof \
+bash experiments/text_supervision_factorial/run_caption_interface_audit.sh
+```
+
+The wrapper auto-detects the existing Nette/Woof DCS and sparse-m4 bank files.
+Set `NETTE_DCS`, `WOOF_DCS`, `NETTE_BANK`, or `WOOF_BANK` explicitly if the
+printed paths are not the intended artifacts. Optional replay assignments can be
+provided through `NETTE_ASSIGNMENTS` and `WOOF_ASSIGNMENTS` to add within-class
+cluster-ID probes.
+
+The primary outputs under `caption_interface_audit_runs/caption_interface_audit_v0`
+are:
+
+- `token_audit_summary.csv`: token lengths, truncation rates, chunk counts, and
+  lost-token/attribute-proxy rates by dataset and condition.
+- `caption_probe_summary.csv`: 5-fold class recoverability for exact training
+  truncation and multi-chunk inference representations.
+- `caption_probe_interface_delta.csv`: direct `chunked - t77` differences for
+  Top-1, balanced accuracy, Macro-F1, and normalized MI.
+- `summary.json`: protocol boundaries and the preregistered 20% truncation flag.
+
+`train_t77_pooled` follows the requested CLIP pooled-output probe. The audit also
+reports mean-hidden variants because those token hidden states align more closely
+with what the generation pipeline consumes.
