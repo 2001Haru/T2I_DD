@@ -392,31 +392,36 @@ def main():
                 "generation_cells": len(selected), "classifier_observations": len(values),
             })
 
-    label_by_family = {}
+    prompt_by_family = {}
     for family in FAMILIES:
-        label_by_family[family] = {
-            generation_seed: lookup[(family, generation_seed, "label")]
-            for generation_seed in sorted({
-                row["generation_seed"] for row in cells
-                if row["checkpoint_family"] == family
-            })
-        }
+        prompt_by_family[family] = {}
+        for prompt in ("label", "correct_t77"):
+            prompt_by_family[family][prompt] = {
+                generation_seed: lookup[(family, generation_seed, prompt)]
+                for generation_seed in sorted({
+                    row["generation_seed"] for row in cells
+                    if row["checkpoint_family"] == family
+                })
+            }
     checkpoint_contrasts = []
     checkpoint_pairs = (
         ("sparse_m4_ft_minus_label_ft", "sparse_m4_ft", "label_ft"),
         ("sparse_m4_ft_minus_matched_ft", "sparse_m4_ft", "matched_ft"),
         ("label_ft_minus_matched_ft", "label_ft", "matched_ft"),
     )
-    for contrast_index, (name, left_family, right_family) in enumerate(checkpoint_pairs):
-        result = bootstrap_paired_checkpoint_difference(
-            label_by_family[left_family], label_by_family[right_family],
-            args.bootstrap_samples, 20260960 + contrast_index,
-        )
-        checkpoint_contrasts.append({
-            "contrast": name,
-            "inference_prompt": "label",
-            **result,
-        })
+    for prompt_index, prompt in enumerate(("label", "correct_t77")):
+        for contrast_index, (name, left_family, right_family) in enumerate(checkpoint_pairs):
+            result = bootstrap_paired_checkpoint_difference(
+                prompt_by_family[left_family][prompt],
+                prompt_by_family[right_family][prompt],
+                args.bootstrap_samples,
+                20260960 + prompt_index * 10 + contrast_index,
+            )
+            checkpoint_contrasts.append({
+                "contrast": name,
+                "inference_prompt": prompt,
+                **result,
+            })
 
     contrasts = []
     for family_index, family in enumerate(FAMILIES):
@@ -586,6 +591,8 @@ def main():
         )
     write_csv(output / "performance.csv", performance)
     write_csv(output / "paired_contrasts.csv", contrasts)
+    write_csv(output / "cross_checkpoint_prompt_contrasts.csv", checkpoint_contrasts)
+    # Keep the original filename for consumers created before correct_t77 was added.
     write_csv(output / "cross_checkpoint_label_contrasts.csv", checkpoint_contrasts)
     write_csv(output / "caption_length_strata_summary.csv", strata_summary)
     write_csv(output / "guidance_branch_norms.csv", guidance_audit)
