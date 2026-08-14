@@ -1,6 +1,7 @@
 import argparse
 import gc
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -25,7 +26,12 @@ from common import (  # noqa: E402
 )
 
 GENERATION_SUPERVISION_MODES = SUPERVISION_MODES + ("sparse_ft",)
-GENERATION_PROMPT_MODES = PROMPT_MODES + ("bank",)
+GENERATION_PROMPT_MODES = PROMPT_MODES + (
+    "bank",
+    "first_sentence",
+    "correct_t77",
+    "label_pad_dcs",
+)
 
 
 def parse_args():
@@ -82,8 +88,58 @@ def checkpoint_identity(reference):
     return payload
 
 
-def get_pipeline_embeds(pipe, prompt, negative_prompt, device):
+def text_chunk_count(tokenizer, text):
+    chunk = tokenizer.model_max_length
+    token_count = tokenizer(text, return_tensors="pt", truncation=False).input_ids.shape[-1]
+    return max(1, (token_count + chunk - 1) // chunk)
+
+
+def first_sentence(text):
+    text = str(text).strip()
+    match = re.match(r"^.*?[.!?](?=\s|$)", text)
+    return match.group(0).strip() if match else text
+
+
+def get_pipeline_embeds(
+    pipe,
+    prompt,
+    negative_prompt,
+    device,
+    policy="chunked",
+    target_chunks=None,
+):
     chunk = pipe.tokenizer.model_max_length
+    if policy == "single":
+        prompt_ids = pipe.tokenizer(
+            prompt, padding="max_length", max_length=chunk, truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(device)
+        negative_ids = pipe.tokenizer(
+            negative_prompt, padding="max_length", max_length=chunk, truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(device)
+        return pipe.text_encoder(prompt_ids)[0], pipe.text_encoder(negative_ids)[0]
+
+    if policy == "pad_extended":
+        if target_chunks is None or target_chunks < 1:
+            raise ValueError("pad_extended requires target_chunks >= 1")
+        prompt_embeds, negative_embeds = get_pipeline_embeds(
+            pipe, prompt, negative_prompt, device, policy="single"
+        )
+        if target_chunks == 1:
+            return prompt_embeds, negative_embeds
+        pad_ids = torch.full(
+            (1, chunk), pipe.tokenizer.pad_token_id, dtype=torch.long, device=device
+        )
+        pad_embeds = pipe.text_encoder(pad_ids)[0]
+        padding = [pad_embeds] * (target_chunks - 1)
+        return (
+            torch.cat([prompt_embeds, *padding], dim=1),
+            torch.cat([negative_embeds, *padding], dim=1),
+        )
+
+    if policy != "chunked":
+        raise ValueError(f"Unknown conditioning policy: {policy}")
     prompt_ids = pipe.tokenizer(prompt, return_tensors="pt", truncation=False).input_ids
     negative_ids = pipe.tokenizer(negative_prompt, return_tensors="pt", truncation=False).input_ids
     length = max(prompt_ids.shape[-1], negative_ids.shape[-1])
@@ -107,14 +163,24 @@ def validate(prototypes, dcs, ipc, shift):
 
 
 def prompt_for(synset, index, image_index, mode, dcs, shift, prompt_bank):
+    correct = str(dcs[synset][index])
     if mode == "label":
-        return IMAGENET2012_CLASSES[synset], None, None
+        return IMAGENET2012_CLASSES[synset], None, None, "chunked", correct
+    if mode == "first_sentence":
+        return first_sentence(correct), index, None, "single", correct
+    if mode == "correct_t77":
+        return correct, index, None, "single", correct
+    if mode == "label_pad_dcs":
+        return IMAGENET2012_CLASSES[synset], None, None, "pad_extended", correct
     if mode == "bank":
         entries = prompt_bank["classes"][synset]
         source = image_index % len(entries)
-        return str(entries[source]["caption"]), source, entries[source]["relative"]
+        return (
+            str(entries[source]["caption"]), source, entries[source]["relative"],
+            "chunked", correct,
+        )
     source = index if mode == "correct" else shuffled_prompt_index(index, len(dcs[synset]), shift)
-    return str(dcs[synset][source]), source, None
+    return str(dcs[synset][source]), source, None, "chunked", correct
 
 
 def schedule_matched_noise(prototype_data, image_seed, device, dtype=torch.float16):
@@ -138,9 +204,15 @@ def generate(pipe, prototypes, dcs, prompt_bank, supervision, prompt_mode, gener
         for repetition in range(repeats):
             for prototype_index, prototype_data in enumerate(values):
                 image_index = repetition * len(values) + prototype_index
-                prompt, source, source_relative = prompt_for(
+                prompt, source, source_relative, embedding_policy, reference_dcs = prompt_for(
                     synset, prototype_index, image_index, prompt_mode, dcs,
                     args.shuffle_shift, prompt_bank
+                )
+                reference_dcs_chunks = text_chunk_count(pipe.tokenizer, reference_dcs)
+                conditioning_chunks = (
+                    reference_dcs_chunks
+                    if embedding_policy == "pad_extended"
+                    else (1 if embedding_policy == "single" else text_chunk_count(pipe.tokenizer, prompt))
                 )
                 image_seed = stable_image_seed(generation_seed, class_index, image_index)
                 records.append({
@@ -150,13 +222,29 @@ def generate(pipe, prototypes, dcs, prompt_bank, supervision, prompt_mode, gener
                     "prompt_source_index": source,
                     "prompt_source_relative": source_relative,
                     "prompt": prompt,
+                    "embedding_policy": embedding_policy,
+                    "conditioning_chunks": conditioning_chunks,
+                    "conditioning_sequence_length": conditioning_chunks * pipe.tokenizer.model_max_length,
+                    "reference_dcs": reference_dcs,
+                    "reference_dcs_chunks": reference_dcs_chunks,
                     "image_seed": image_seed,
                 })
                 destination = class_dir / f"image_{image_index:05d}.png"
                 if destination.is_file():
                     completed += 1
                     continue
-                prompt_embeds, negative_embeds = get_pipeline_embeds(pipe, prompt, args.negative_prompt, args.device)
+                prompt_embeds, negative_embeds = get_pipeline_embeds(
+                    pipe,
+                    prompt,
+                    args.negative_prompt,
+                    args.device,
+                    policy=embedding_policy,
+                    target_chunks=conditioning_chunks,
+                )
+                if prompt_embeds.shape[1] != negative_embeds.shape[1]:
+                    raise RuntimeError("Positive and negative conditioning lengths differ")
+                if prompt_embeds.shape[1] != conditioning_chunks * pipe.tokenizer.model_max_length:
+                    raise RuntimeError("Conditioning sequence length does not match its manifest record")
                 generator = torch.Generator(device=args.device).manual_seed(image_seed)
                 call_args = {
                     "prompt_embeds": prompt_embeds,
@@ -224,7 +312,7 @@ def main():
                 )
                 output_dir = output_root / f"seed_{generation_seed}" / condition
                 manifest = {
-                    "format_version": 1,
+                    "format_version": 2,
                     "condition": condition,
                     "supervision_mode": supervision,
                     "prompt_mode": prompt_mode,
@@ -251,6 +339,13 @@ def main():
                     "negative_prompt": args.negative_prompt,
                     "shuffle_shift": args.shuffle_shift,
                     "paired_noise_across_all_cells": True,
+                    "conditioning_length_control": (
+                        "label_pad_dcs appends text-encoder outputs from all-pad token blocks "
+                        "along sequence dimension to match the paired correct DCS chunk count; "
+                        "positive and negative branches have identical sequence lengths"
+                        if prompt_mode == "label_pad_dcs"
+                        else None
+                    ),
                 }
                 ensure_manifest(output_dir, manifest, resume=args.resume)
                 records, count = generate(

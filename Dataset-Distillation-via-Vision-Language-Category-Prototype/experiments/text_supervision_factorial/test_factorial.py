@@ -11,10 +11,65 @@ import torch
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from common import build_unpaired_donors, condition_matrix, shuffled_prompt_index  # noqa: E402
-from generate_factorial import schedule_matched_noise  # noqa: E402
+from generate_factorial import (  # noqa: E402
+    first_sentence,
+    get_pipeline_embeds,
+    schedule_matched_noise,
+    text_chunk_count,
+)
+
+
+class Tokenized:
+    def __init__(self, ids):
+        self.input_ids = ids
+
+
+class FakeTokenizer:
+    model_max_length = 77
+    pad_token_id = 0
+
+    def __call__(self, text, return_tensors="pt", truncation=False, padding=None, max_length=None):
+        ids = [1] + list(range(2, 2 + len(str(text).split()))) + [99]
+        if truncation and max_length is not None:
+            ids = ids[:max_length]
+        if padding == "max_length":
+            ids = ids + [self.pad_token_id] * (max_length - len(ids))
+        return Tokenized(torch.tensor([ids], dtype=torch.long))
+
+
+class FakeEncoder:
+    def __call__(self, ids):
+        return (ids.float().unsqueeze(-1).repeat(1, 1, 3),)
+
+
+class FakePipe:
+    tokenizer = FakeTokenizer()
+    text_encoder = FakeEncoder()
 
 
 class AssignmentTests(unittest.TestCase):
+    def test_first_sentence_and_chunk_count(self):
+        self.assertEqual(first_sentence("One sentence. Another sentence."), "One sentence.")
+        self.assertEqual(first_sentence("No punctuation"), "No punctuation")
+        self.assertEqual(text_chunk_count(FakeTokenizer(), "word " * 76), 2)
+
+    def test_padding_control_extends_sequence_not_hidden_dimension(self):
+        positive, negative = get_pipeline_embeds(
+            FakePipe(), "class label", "negative", "cpu",
+            policy="pad_extended", target_chunks=3,
+        )
+        self.assertEqual(tuple(positive.shape), (1, 231, 3))
+        self.assertEqual(tuple(negative.shape), (1, 231, 3))
+        self.assertTrue(torch.equal(positive[:, 77:], negative[:, 77:]))
+        self.assertTrue(torch.count_nonzero(positive[:, 77:]) == 0)
+
+    def test_single_policy_is_exactly_one_block(self):
+        positive, negative = get_pipeline_embeds(
+            FakePipe(), "word " * 100, "negative", "cpu", policy="single"
+        )
+        self.assertEqual(tuple(positive.shape), (1, 77, 3))
+        self.assertEqual(tuple(negative.shape), (1, 77, 3))
+
     def test_matrix_has_eighteen_unique_cells(self):
         conditions = [item["condition"] for item in condition_matrix()]
         self.assertEqual(len(conditions), 18)
