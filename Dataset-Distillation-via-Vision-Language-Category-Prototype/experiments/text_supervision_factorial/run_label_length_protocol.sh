@@ -6,7 +6,7 @@ BASE_MODEL="${BASE_MODEL:-/linxi/models/VLCP/stable-diffusion-v1-5}"
 DIFFUSERS_SRC="${DIFFUSERS_SRC:-/linxi/packages/VLCP/diffusers}"
 GENERALITY_RUN_ROOT="${GENERALITY_RUN_ROOT:-./text_supervision_generality_runs/text_supervision_generality_v0}"
 BASE_RUN_ROOT="${BASE_RUN_ROOT:-./text_supervision_factorial_runs/text_supervision_factorial_2xa100_v0}"
-RUN_ROOT="${RUN_ROOT:-./conditioning_interface_control_runs/label_length_protocol_v0}"
+RUN_ROOT="${RUN_ROOT:-./conditioning_interface_control_runs/raw_label_tokenmax_protocol_v1}"
 GPUS="${GPUS:-0,1,2,3}"
 
 python experiments/text_supervision_factorial/run_label_length_protocol.py \

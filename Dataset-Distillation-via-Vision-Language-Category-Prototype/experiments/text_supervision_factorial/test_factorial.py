@@ -16,10 +16,11 @@ from generate_factorial import (  # noqa: E402
     epsilon_branch_metrics,
     first_sentence,
     get_pipeline_embeds,
-    official_exact_length,
     planned_guidance_timesteps,
     schedule_matched_noise,
     text_chunk_count,
+    tokenmax_shared_length,
+    variable_length_audit,
 )
 
 
@@ -195,26 +196,32 @@ class AssignmentTests(unittest.TestCase):
         self.assertEqual(tuple(positive.shape), (1, 77, 3))
         self.assertEqual(tuple(negative.shape), (1, 77, 3))
 
-    def test_official_exact_policy_preserves_short_shared_length(self):
+    def test_tokenmax_variable_policy_preserves_short_shared_length(self):
         prompt = "class label with several words"
         negative = "negative prompt"
-        expected = official_exact_length(FakeTokenizer(), prompt, negative)
+        expected = tokenmax_shared_length(FakeTokenizer(), prompt, negative)
         positive, negative_embeds = get_pipeline_embeds(
-            FakePipe(), prompt, negative, "cpu", policy="official_exact"
+            FakePipe(), prompt, negative, "cpu", policy="tokenmax_variable"
         )
         self.assertEqual(expected, 7)
         self.assertEqual(tuple(positive.shape), (1, expected, 3))
         self.assertEqual(tuple(negative_embeds.shape), (1, expected, 3))
 
-    def test_official_exact_policy_uses_token_lengths_not_whitespace_counts(self):
+    def test_tokenmax_variable_policy_uses_token_lengths_not_whitespace_counts(self):
         pipe = FakePipe()
         pipe.tokenizer = WordCountMismatchTokenizer()
         positive, negative = get_pipeline_embeds(
             pipe, "subword-heavy", "three word prompt", "cpu",
-            policy="official_exact",
+            policy="tokenmax_variable",
         )
         self.assertEqual(tuple(positive.shape), (1, 10, 3))
         self.assertEqual(tuple(negative.shape), (1, 10, 3))
+        audit = variable_length_audit(
+            pipe.tokenizer, "subword-heavy", "three word prompt"
+        )
+        self.assertTrue(audit["official_branch_disagrees_with_tokenmax"])
+        self.assertTrue(audit["official_whitespace_would_shape_mismatch"])
+        self.assertEqual(audit["tokenmax_shared_length"], 10)
 
     def test_matrix_has_eighteen_unique_cells(self):
         conditions = [item["condition"] for item in condition_matrix()]

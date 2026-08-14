@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the urgent padded-77 versus official variable-length Label check."""
+"""Run the paired padded-77 versus token-max variable-length raw-Label check."""
 
 import argparse
 import json
@@ -14,7 +14,7 @@ from run_sparse_interface_transfer import acquire_run_lock, append_scheduler_eve
 
 
 HERE = Path(__file__).resolve().parent
-PROMPTS = ("label", "label_var")
+PROMPTS = ("label", "raw_label_tokenmax_var")
 
 
 def parse_args():
@@ -84,20 +84,30 @@ def build_tasks(args):
         for prompt in PROMPTS:
             eval_name = f"eval_g{generation_seed}_{prompt}"
             log = root / "evaluation" / f"seed_{generation_seed}" / f"{prompt}.log"
+            per_class = (
+                root / "evaluation" / f"seed_{generation_seed}"
+                / f"{prompt}.per_class.json"
+            )
+            command = eval_command(
+                args, seed_root / condition(prompt), args.data_root,
+                args.ipc, "nette", eval_name,
+            )
+            command.extend(("--per_class_output", str(per_class)))
             tasks[eval_name] = Task(
                 eval_name, 1, "eval",
-                eval_command(
-                    args, seed_root / condition(prompt), args.data_root,
-                    args.ipc, "nette", eval_name,
+                command,
+                EVAL_DIR, log,
+                lambda log=log, per_class=per_class: (
+                    complete_eval(log)() and per_class.is_file()
                 ),
-                EVAL_DIR, log, complete_eval(log), dependencies=(gen_name,),
+                dependencies=(gen_name,),
             )
             index.append({
                 "experiment": "label_length_protocol", "spec": "nette",
                 "ipc": args.ipc, "strength": args.strength,
                 "checkpoint_family": "matched_ft", "training_seed": 0,
                 "generation_seed": generation_seed, "prompt": prompt,
-                "evaluation_log": str(log),
+                "evaluation_log": str(log), "per_class_output": str(per_class),
             })
     return tasks, index
 
@@ -114,9 +124,9 @@ def main():
     lock = acquire_run_lock(root)
     tasks, index = build_tasks(args)
     manifest = {
-        "format_version": 1,
+        "format_version": 2,
         "experiment": "label_length_protocol",
-        "preregistered_primary": "label_var_minus_label_pad",
+        "preregistered_primary": "raw_label_tokenmax_var_minus_raw_label_pad77",
         "protocol": {
             "spec": "nette", "ipc": args.ipc, "strength": args.strength,
             "checkpoint": str(Path(args.matched_model).resolve()),
@@ -126,11 +136,15 @@ def main():
             "num_inference_steps": args.num_inference_steps,
             "negative_prompt": "cartoon, anime, painting",
             "paired_noise_across_prompts": True,
-            "label": "current padded/truncated [B,77,768] conditioning",
-            "label_var": (
-                "VLCP variable-length raw-slice protocol with the shared length selected "
-                "from actual CLIP token counts; this repairs the official whitespace-word "
-                "heuristic when it selects the token-shorter CFG branch"
+            "label": "raw class string padded/truncated to [B,77,768]",
+            "raw_label_tokenmax_var": (
+                "raw class string with both CFG branches independently tokenized, then "
+                "padded to max(positive CLIP tokens, negative CLIP tokens); deterministic "
+                "per prompt and independent of batch composition"
+            ),
+            "official_whitespace_heuristic": (
+                "audited only; never used for generation because it can select the "
+                "token-shorter CFG branch"
             ),
             "diffusers_src": str(Path(args.diffusers_src).resolve()),
         },
@@ -138,11 +152,7 @@ def main():
     manifest_path = root / "run_manifest.json"
     if manifest_path.is_file():
         existing = json.loads(manifest_path.read_text(encoding="utf-8"))
-        legacy = json.loads(json.dumps(manifest))
-        legacy["protocol"]["label_var"] = (
-            "official VLCP exact shared token length, raw-sliced at 77"
-        )
-        if existing not in (manifest, legacy):
+        if existing != manifest:
             raise RuntimeError(f"Resume configuration differs from {manifest_path}")
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     index_path = root / "evaluation_index.json"

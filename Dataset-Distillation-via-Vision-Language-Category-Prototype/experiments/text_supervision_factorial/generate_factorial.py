@@ -29,6 +29,7 @@ GENERATION_SUPERVISION_MODES = SUPERVISION_MODES + ("sparse_ft",)
 GENERATION_PROMPT_MODES = PROMPT_MODES + (
     "bank",
     "label_var",
+    "raw_label_tokenmax_var",
     "first_sentence",
     "correct_t77",
     "label_pad_dcs",
@@ -101,8 +102,8 @@ def text_chunk_count(tokenizer, text):
     return max(1, (token_count + chunk - 1) // chunk)
 
 
-def official_exact_length(tokenizer, prompt, negative_prompt):
-    """Return the exact shared length after independently tokenizing both CFG branches."""
+def tokenmax_shared_length(tokenizer, prompt, negative_prompt):
+    """Return a valid shared CFG length from actual untruncated CLIP token counts."""
     prompt_length = tokenizer(
         prompt, return_tensors="pt", truncation=False
     ).input_ids.shape[-1]
@@ -110,6 +111,39 @@ def official_exact_length(tokenizer, prompt, negative_prompt):
         negative_prompt, return_tensors="pt", truncation=False
     ).input_ids.shape[-1]
     return max(prompt_length, negative_length)
+
+
+# Compatibility for manifests and tests created before the unsafe official
+# whitespace heuristic was separated from the repaired token-max protocol.
+official_exact_length = tokenmax_shared_length
+
+
+def variable_length_audit(tokenizer, prompt, negative_prompt):
+    positive_words = len(str(prompt).split(" "))
+    negative_words = len(str(negative_prompt).split(" "))
+    positive_tokens = tokenizer(
+        prompt, return_tensors="pt", truncation=False,
+    ).input_ids.shape[-1]
+    negative_tokens = tokenizer(
+        negative_prompt, return_tensors="pt", truncation=False,
+    ).input_ids.shape[-1]
+    official_positive = positive_words >= negative_words
+    tokenmax_positive = positive_tokens >= negative_tokens
+    official_length = positive_tokens if official_positive else negative_tokens
+    other_length = negative_tokens if official_positive else positive_tokens
+    return {
+        "positive_whitespace_words": positive_words,
+        "negative_whitespace_words": negative_words,
+        "positive_clip_tokens": positive_tokens,
+        "negative_clip_tokens": negative_tokens,
+        "tokenmax_shared_length": max(positive_tokens, negative_tokens),
+        "official_whitespace_selected_branch": (
+            "positive" if official_positive else "negative"
+        ),
+        "tokenmax_selected_branch": "positive" if tokenmax_positive else "negative",
+        "official_branch_disagrees_with_tokenmax": official_positive != tokenmax_positive,
+        "official_whitespace_would_shape_mismatch": other_length > official_length,
+    }
 
 
 def first_sentence(text):
@@ -127,7 +161,7 @@ def get_pipeline_embeds(
     target_chunks=None,
 ):
     chunk = pipe.tokenizer.model_max_length
-    if policy == "official_exact":
+    if policy in {"official_exact", "tokenmax_variable"}:
         # Preserve VLCP's variable-length raw-slice protocol while replacing its
         # unsafe whitespace-word heuristic with actual CLIP token lengths. The
         # official heuristic can choose the shorter token sequence, after which
@@ -252,6 +286,8 @@ def prompt_for(synset, index, image_index, mode, dcs, shift, prompt_bank):
         return IMAGENET2012_CLASSES[synset], None, None, "chunked", correct
     if mode == "label_var":
         return IMAGENET2012_CLASSES[synset], None, None, "official_exact", correct
+    if mode == "raw_label_tokenmax_var":
+        return IMAGENET2012_CLASSES[synset], None, None, "tokenmax_variable", correct
     if mode == "first_sentence":
         return first_sentence(correct), index, None, "single", correct
     if mode == "correct_t77":
@@ -389,8 +425,8 @@ def generate(pipe, prototypes, dcs, prompt_bank, supervision, prompt_mode, gener
                     else (1 if embedding_policy == "single" else text_chunk_count(pipe.tokenizer, prompt))
                 )
                 conditioning_sequence_length = (
-                    official_exact_length(pipe.tokenizer, prompt, args.negative_prompt)
-                    if embedding_policy == "official_exact"
+                    tokenmax_shared_length(pipe.tokenizer, prompt, args.negative_prompt)
+                    if embedding_policy in {"official_exact", "tokenmax_variable"}
                     else conditioning_chunks * pipe.tokenizer.model_max_length
                 )
                 image_seed = stable_image_seed(generation_seed, class_index, image_index)
@@ -409,6 +445,10 @@ def generate(pipe, prototypes, dcs, prompt_bank, supervision, prompt_mode, gener
                     "chunk_count_unit": "individual_prompt_not_batch_max",
                     "image_seed": image_seed,
                 }
+                if embedding_policy in {"official_exact", "tokenmax_variable"}:
+                    record.update(variable_length_audit(
+                        pipe.tokenizer, prompt, args.negative_prompt
+                    ))
                 destination = class_dir / f"image_{image_index:05d}.png"
                 diagnostic_path = class_dir / f"image_{image_index:05d}.guidance.json"
                 if destination.is_file() and (
