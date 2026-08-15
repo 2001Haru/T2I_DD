@@ -35,6 +35,8 @@ GENERATION_PROMPT_MODES = PROMPT_MODES + (
     "label_pad_dcs",
     "correct_t77_pad_dcs",
     "correct_head_pad_dcs",
+    "label_wrapped_dcs",
+    "correct_tokenmax_var",
 )
 
 
@@ -234,6 +236,27 @@ def get_pipeline_embeds(
             torch.cat([negative_embeds, *negative_tail], dim=1),
         )
 
+    if policy == "wrapped_empty_extended":
+        if target_chunks is None or target_chunks < 1:
+            raise ValueError("wrapped_empty_extended requires target_chunks >= 1")
+        prompt_embeds, negative_embeds = get_pipeline_embeds(
+            pipe, prompt, negative_prompt, device, policy="single"
+        )
+        if target_chunks == 1:
+            return prompt_embeds, negative_embeds
+        empty_ids = pipe.tokenizer(
+            "", padding="max_length", max_length=chunk, truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(device)
+        # Re-encoding an empty string restarts CLIP positions with BOS/EOS in
+        # every appended block instead of raw-slicing a padding-derived tail.
+        empty_block = pipe.text_encoder(empty_ids)[0]
+        tails = [empty_block] * (target_chunks - 1)
+        return (
+            torch.cat([prompt_embeds, *tails], dim=1),
+            torch.cat([negative_embeds, *tails], dim=1),
+        )
+
     if policy == "chunk_head_pad_extended":
         if target_chunks is None or target_chunks < 1:
             raise ValueError("chunk_head_pad_extended requires target_chunks >= 1")
@@ -298,6 +321,10 @@ def prompt_for(synset, index, image_index, mode, dcs, shift, prompt_bank):
         return correct, index, None, "single_pad_extended", correct
     if mode == "correct_head_pad_dcs":
         return correct, index, None, "chunk_head_pad_extended", correct
+    if mode == "label_wrapped_dcs":
+        return IMAGENET2012_CLASSES[synset], None, None, "wrapped_empty_extended", correct
+    if mode == "correct_tokenmax_var":
+        return correct, index, None, "tokenmax_variable", correct
     if mode == "bank":
         entries = prompt_bank["classes"][synset]
         source = image_index % len(entries)
@@ -420,7 +447,8 @@ def generate(pipe, prototypes, dcs, prompt_bank, supervision, prompt_mode, gener
                 conditioning_chunks = (
                     reference_dcs_chunks
                     if embedding_policy in {
-                        "pad_extended", "single_pad_extended", "chunk_head_pad_extended"
+                        "pad_extended", "single_pad_extended", "chunk_head_pad_extended",
+                        "wrapped_empty_extended",
                     }
                     else (1 if embedding_policy == "single" else text_chunk_count(pipe.tokenizer, prompt))
                 )
@@ -587,12 +615,19 @@ def main():
                     "shuffle_shift": args.shuffle_shift,
                     "paired_noise_across_all_cells": True,
                     "conditioning_length_control": (
-                        "Length-matched controls append padding-derived blocks along sequence "
-                        "dimension to match paired correct-DCS chunk count. correct_head_pad_dcs "
-                        "uses the exact raw-sliced first block from full DCS and replaces only "
-                        "later positive blocks with the corresponding negative-tail blocks."
+                        (
+                            "Length-matched control appends independently encoded empty-string "
+                            "blocks, each restarting CLIP positions with BOS/EOS."
+                            if prompt_mode == "label_wrapped_dcs"
+                            else "Length-matched controls append padding-derived blocks along "
+                            "sequence dimension to match paired correct-DCS chunk count. "
+                            "correct_head_pad_dcs uses the exact raw-sliced first block from "
+                            "full DCS and replaces only later positive blocks with the "
+                            "corresponding negative-tail blocks."
+                        )
                         if prompt_mode in {
-                            "label_pad_dcs", "correct_t77_pad_dcs", "correct_head_pad_dcs"
+                            "label_pad_dcs", "correct_t77_pad_dcs", "correct_head_pad_dcs",
+                            "label_wrapped_dcs",
                         }
                         else None
                     ),

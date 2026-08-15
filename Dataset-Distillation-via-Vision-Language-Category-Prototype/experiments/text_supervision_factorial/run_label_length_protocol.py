@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run paired raw-Label length controls plus the existing correct-DCS t77 arm."""
+"""Run the six-cell Label/DCS conditioning-layout control matrix."""
 
 import argparse
 import json
@@ -14,7 +14,15 @@ from run_sparse_interface_transfer import acquire_run_lock, append_scheduler_eve
 
 
 HERE = Path(__file__).resolve().parent
-PROMPTS = ("label", "raw_label_tokenmax_var", "correct_t77")
+PROMPTS = (
+    "label",                 # a_pad77
+    "label_pad_dcs",         # e: raw/padding-derived empty tail blocks
+    "label_wrapped_dcs",     # e_wrapped: independently BOS-wrapped empty blocks
+    "correct_t77",           # c
+    "correct",               # d_pad
+    "correct_tokenmax_var",  # d_var
+)
+OPTIONAL_PRIOR_PROMPTS = ("raw_label_tokenmax_var",)
 
 
 def parse_args():
@@ -36,6 +44,7 @@ def parse_args():
     parser.add_argument("--retry-delay-seconds", type=int, default=120)
     parser.add_argument("--max-retries", type=int, default=0)
     parser.add_argument("--diffusers-src", default="/linxi/packages/VLCP/diffusers")
+    parser.add_argument("--historical-strength-index", default="")
     return parser.parse_args()
 
 
@@ -107,6 +116,7 @@ def build_tasks(args):
                 "ipc": args.ipc, "strength": args.strength,
                 "checkpoint_family": "matched_ft", "training_seed": 0,
                 "generation_seed": generation_seed, "prompt": prompt,
+                "synthetic_dir": str(seed_root / condition(prompt)),
                 "evaluation_log": str(log), "per_class_output": str(per_class),
             })
     return tasks, index
@@ -126,9 +136,9 @@ def main():
     if any(not task.complete() for task in tasks.values()):
         (root / "COMPLETE").unlink(missing_ok=True)
     manifest = {
-        "format_version": 3,
-        "experiment": "label_length_protocol",
-        "preregistered_primary": "raw_label_tokenmax_var_minus_raw_label_pad77",
+        "format_version": 5,
+        "experiment": "six_cell_conditioning_layout",
+        "preregistered_primary": "wrapped_empty_minus_raw_empty",
         "protocol": {
             "spec": "nette", "ipc": args.ipc, "strength": args.strength,
             "checkpoint": str(Path(args.matched_model).resolve()),
@@ -139,32 +149,69 @@ def main():
             "negative_prompt": "cartoon, anime, painting",
             "paired_noise_across_prompts": True,
             "label": "raw class string padded/truncated to [B,77,768]",
-            "raw_label_tokenmax_var": (
-                "raw class string with both CFG branches independently tokenized, then "
-                "padded to max(positive CLIP tokens, negative CLIP tokens); deterministic "
-                "per prompt and independent of batch composition"
+            "label_pad_dcs": (
+                "raw Label head plus padding-derived empty tail blocks, with the number "
+                "of blocks matched independently to the paired Correct DCS caption"
+            ),
+            "label_wrapped_dcs": (
+                "raw Label head plus independently encoded empty-string tail blocks; "
+                "every appended block restarts CLIP positions as [BOS, EOS, PAD...]"
             ),
             "correct_t77": (
                 "the paired cluster-specific Correct DCS caption truncated/padded to one "
                 "77-position SD1.5 CLIP block"
+            ),
+            "correct_dcs_pad77_chunks": (
+                "full Correct DCS rounded up to 77-position blocks; both CFG branches "
+                "share the padded multiple-of-77 sequence length"
+            ),
+            "correct_dcs_tokenmax_var": (
+                "full Correct DCS at max(actual positive CLIP tokens, actual negative "
+                "CLIP tokens), without rounding to a 77-position multiple"
             ),
             "official_whitespace_heuristic": (
                 "audited only; never used for generation because it can select the "
                 "token-shorter CFG branch"
             ),
             "diffusers_src": str(Path(args.diffusers_src).resolve()),
+            "matrix_prompts": list(PROMPTS),
+            "optional_prior_control": list(OPTIONAL_PRIOR_PROMPTS),
         },
     }
     manifest_path = root / "run_manifest.json"
     if manifest_path.is_file():
         existing = json.loads(manifest_path.read_text(encoding="utf-8"))
-        legacy = json.loads(json.dumps(manifest))
-        legacy["format_version"] = 2
-        legacy["protocol"].pop("correct_t77")
-        if existing not in (manifest, legacy):
+        legacy_v4 = {
+            "format_version": 4,
+            "experiment": "label_length_protocol",
+            "preregistered_primary": "raw_label_tokenmax_var_minus_raw_label_pad77",
+            "protocol": {
+                key: value for key, value in manifest["protocol"].items()
+                if key not in {"label_pad_dcs", "label_wrapped_dcs", "matrix_prompts", "optional_prior_control"}
+            },
+        }
+        legacy_v4["protocol"]["raw_label_tokenmax_var"] = (
+            "raw class string with both CFG branches independently tokenized, then "
+            "padded to max(positive CLIP tokens, negative CLIP tokens); deterministic "
+            "per prompt and independent of batch composition"
+        )
+        legacy_v3 = json.loads(json.dumps(legacy_v4))
+        legacy_v3["format_version"] = 3
+        legacy_v3["protocol"].pop("correct_dcs_pad77_chunks")
+        legacy_v3["protocol"].pop("correct_dcs_tokenmax_var")
+        legacy_v2 = json.loads(json.dumps(legacy_v3))
+        legacy_v2["format_version"] = 2
+        legacy_v2["protocol"].pop("correct_t77")
+        if existing not in (manifest, legacy_v4, legacy_v3, legacy_v2):
             raise RuntimeError(f"Resume configuration differs from {manifest_path}")
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     index_path = root / "evaluation_index.json"
+    if index_path.is_file():
+        prior_index = json.loads(index_path.read_text(encoding="utf-8"))
+        index.extend(
+            row for row in prior_index
+            if row.get("prompt") in OPTIONAL_PRIOR_PROMPTS
+        )
     index_path.write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     append_scheduler_event(root, "scheduler_start_requested", experiment="label_length_protocol")
     run_scheduler(args, tasks)
@@ -172,6 +219,16 @@ def main():
         sys.executable, str(HERE / "summarize_label_length_protocol.py"),
         "--evaluation-index", str(index_path), "--output-dir", str(root / "summary"),
     ], cwd=REPO_ROOT, check=True)
+    if args.historical_strength_index:
+        historical_index = Path(args.historical_strength_index).resolve()
+        if not historical_index.is_file():
+            raise FileNotFoundError(historical_index)
+        subprocess.run([
+            sys.executable, str(HERE / "audit_label_reproducibility.py"),
+            "--current-index", str(index_path),
+            "--historical-index", str(historical_index),
+            "--output-dir", str(root / "summary" / "historical_reproducibility"),
+        ], cwd=REPO_ROOT, check=True)
     (root / "COMPLETE").write_text(time.strftime("%F %T\n"), encoding="utf-8")
     lock.close()
 

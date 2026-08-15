@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Summarize raw-Label length controls and the paired Correct-DCS t77 arm."""
+"""Summarize the six-cell Label/DCS conditioning-layout experiment."""
 
 import argparse
 import ast
 import csv
+import hashlib
 import json
 import random
 import re
@@ -12,12 +13,29 @@ from pathlib import Path
 
 
 RESULT = re.compile(r"Best, last acc:----(\[[^\]]+\])")
-PROMPTS = ("label", "raw_label_tokenmax_var", "correct_t77")
-PROTOCOL_NAMES = {
-    "label": "raw_label_pad77",
-    "raw_label_tokenmax_var": "raw_label_tokenmax_var",
-    "correct_t77": "correct_dcs_t77",
+MATRIX_PROMPTS = (
+    "label", "label_pad_dcs", "label_wrapped_dcs",
+    "correct_t77", "correct", "correct_tokenmax_var",
+)
+OPTIONAL_PROMPTS = ("raw_label_tokenmax_var",)
+DISPLAY = {
+    "label": "a_pad77",
+    "label_pad_dcs": "e_raw_empty",
+    "label_wrapped_dcs": "e_wrapped",
+    "correct_t77": "c_t77",
+    "correct": "d_pad77_chunks",
+    "correct_tokenmax_var": "d_variable_official",
+    "raw_label_tokenmax_var": "a_variable_auxiliary",
 }
+CONTRASTS = (
+    ("c_minus_a", "label", "correct_t77"),
+    ("e_minus_a", "label", "label_pad_dcs"),
+    ("e_wrapped_minus_a", "label", "label_wrapped_dcs"),
+    ("e_wrapped_minus_e", "label_pad_dcs", "label_wrapped_dcs"),
+    ("d_pad_minus_c", "correct_t77", "correct"),
+    ("d_var_minus_c", "correct_t77", "correct_tokenmax_var"),
+    ("d_var_minus_d_pad", "correct", "correct_tokenmax_var"),
+)
 
 
 def parse_args():
@@ -40,42 +58,122 @@ def percentile(values, probability):
     return ordered[min(len(ordered) - 1, int(probability * len(ordered)))]
 
 
-def bootstrap_paired(paired, samples, seed=20260814):
-    generation_seeds = sorted(paired)
-    observed = [value for generation in generation_seeds for value in paired[generation]]
+def bootstrap_values(cells, samples, seed):
+    generations = sorted(cells)
+    observed = [value for generation in generations for value in cells[generation]]
     rng = random.Random(seed)
     estimates = []
     for _ in range(samples):
         values = []
-        for _ in generation_seeds:
-            generation = rng.choice(generation_seeds)
-            differences = paired[generation]
-            values.extend(rng.choice(differences) for _ in differences)
+        for _ in generations:
+            generation = rng.choice(generations)
+            repeats = cells[generation]
+            values.extend(rng.choice(repeats) for _ in repeats)
         estimates.append(statistics.fmean(values))
     return {
-        "mean_difference": statistics.fmean(observed),
+        "mean_accuracy": statistics.fmean(observed),
         "bootstrap_ci95_lower": percentile(estimates, 0.025),
         "bootstrap_ci95_upper": percentile(estimates, 0.975),
-        "generation_cells": len(generation_seeds),
-        "paired_classifier_observations": len(observed),
-        "bootstrap_order": "shared generation seed -> paired classifier repeat",
+        "generation_cells": len(generations),
+        "classifier_observations": len(observed),
     }
 
 
-def per_class_repeats(path):
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    classes = payload["class_names"]
-    return [{
-        class_name: float(value)
-        for class_name, value in zip(classes, repeat["per_class_accuracy"])
-    } for repeat in payload["repeats"]]
+def bootstrap_paired(left, right, samples, seed):
+    generations = sorted(set(left) & set(right))
+    if set(left) != set(right):
+        raise ValueError("Generation seeds differ across paired arms")
+    paired = {}
+    for generation in generations:
+        if len(left[generation]) != len(right[generation]):
+            raise ValueError(f"Classifier-repeat mismatch at generation seed {generation}")
+        paired[generation] = [
+            right_value - left_value
+            for left_value, right_value in zip(left[generation], right[generation])
+        ]
+    result = bootstrap_values(paired, samples, seed)
+    result["mean_difference"] = result.pop("mean_accuracy")
+    result["paired_classifier_observations"] = result.pop("classifier_observations")
+    result["bootstrap_order"] = "shared generation seed -> paired classifier repeat"
+    return result
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def write_csv(path, rows):
+    if not rows:
+        return
     with Path(path).open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
+
+
+def record_key(row):
+    return row["synset"], int(row["image_index"])
+
+
+def integrity_audit(index):
+    rows = []
+    checkpoint_identities = []
+    by_seed_prompt = {}
+    for entry in index:
+        prompt = entry.get("prompt")
+        if prompt not in MATRIX_PROMPTS:
+            continue
+        synthetic = Path(entry["synthetic_dir"])
+        records_path = synthetic / "prompt_records.json"
+        manifest_path = synthetic / "manifest.json"
+        if not records_path.is_file() or not manifest_path.is_file():
+            raise FileNotFoundError(records_path if not records_path.is_file() else manifest_path)
+        records = json.loads(records_path.read_text(encoding="utf-8"))
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        checkpoint_identities.append(manifest["checkpoint"])
+        by_seed_prompt[(int(entry["generation_seed"]), prompt)] = (
+            synthetic, {record_key(row): row for row in records}
+        )
+
+    if any(identity != checkpoint_identities[0] for identity in checkpoint_identities):
+        raise RuntimeError("Checkpoint identity differs across six paired arms")
+
+    for generation in sorted({seed for seed, _ in by_seed_prompt}):
+        available = {prompt for seed, prompt in by_seed_prompt if seed == generation}
+        if not set(MATRIX_PROMPTS).issubset(available):
+            continue
+        roots = {prompt: by_seed_prompt[(generation, prompt)][0] for prompt in MATRIX_PROMPTS}
+        records = {prompt: by_seed_prompt[(generation, prompt)][1] for prompt in MATRIX_PROMPTS}
+        keys = set.intersection(*(set(records[prompt]) for prompt in MATRIX_PROMPTS))
+        for key in sorted(keys):
+            reference_chunks = int(records["correct"][key]["conditioning_chunks"])
+            if int(records["label_pad_dcs"][key]["conditioning_chunks"]) != reference_chunks:
+                raise RuntimeError(f"e chunk-count mismatch at seed={generation}, key={key}")
+            if int(records["label_wrapped_dcs"][key]["conditioning_chunks"]) != reference_chunks:
+                raise RuntimeError(f"e_wrapped chunk-count mismatch at seed={generation}, key={key}")
+            relative = Path(key[0]) / f"image_{key[1]:05d}.png"
+            hashes = {prompt: sha256(roots[prompt] / relative) for prompt in MATRIX_PROMPTS}
+            short = reference_chunks == 1
+            if short and not (
+                hashes["label"] == hashes["label_pad_dcs"] == hashes["label_wrapped_dcs"]
+            ):
+                raise RuntimeError(f"Short-slot a/e/e_wrapped identity failed: seed={generation}, key={key}")
+            rows.append({
+                "generation_seed": generation,
+                "synset": key[0],
+                "image_index": key[1],
+                "reference_chunks": reference_chunks,
+                "caption_stratum": "short" if short else "long",
+                "e_equals_a_png": hashes["label_pad_dcs"] == hashes["label"],
+                "e_wrapped_equals_a_png": hashes["label_wrapped_dcs"] == hashes["label"],
+                "e_wrapped_equals_e_png": hashes["label_wrapped_dcs"] == hashes["label_pad_dcs"],
+                "d_var_equals_d_pad_png": hashes["correct_tokenmax_var"] == hashes["correct"],
+            })
+    return rows, checkpoint_identities[0]
 
 
 def main():
@@ -84,193 +182,94 @@ def main():
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
     index = json.loads(index_path.read_text(encoding="utf-8"))
-    by_prompt = {prompt: {} for prompt in PROMPTS}
-    per_class = {prompt: {} for prompt in PROMPTS}
+    present = {row.get("prompt") for row in index}
+    missing = set(MATRIX_PROMPTS) - present
+    if missing:
+        raise RuntimeError(f"Incomplete six-cell matrix: {sorted(missing)}")
+    prompts = list(MATRIX_PROMPTS) + [prompt for prompt in OPTIONAL_PROMPTS if prompt in present]
+
+    cells = {prompt: {} for prompt in prompts}
+    for row in index:
+        prompt = row.get("prompt")
+        if prompt in cells:
+            cells[prompt][int(row["generation_seed"])] = scores(row["evaluation_log"])
+
     performance = []
-    for prompt in PROMPTS:
-        selected = [row for row in index if row["prompt"] == prompt]
-        for row in selected:
-            by_prompt[prompt][int(row["generation_seed"])] = scores(row["evaluation_log"])
-            per_class[prompt][int(row["generation_seed"])] = per_class_repeats(
-                row["per_class_output"]
-            )
-        flat = [value for values in by_prompt[prompt].values() for value in values]
+    for offset, prompt in enumerate(prompts):
+        result = bootstrap_values(cells[prompt], args.bootstrap_samples, 20260815 + offset)
         performance.append({
             "prompt": prompt,
-            "conditioning_protocol": PROTOCOL_NAMES[prompt],
-            "mean_accuracy": statistics.fmean(flat),
-            "generation_cells": len(by_prompt[prompt]),
-            "classifier_observations": len(flat),
+            "cell": DISPLAY[prompt],
+            "matrix_role": "primary" if prompt in MATRIX_PROMPTS else "auxiliary_prior_control",
+            **result,
         })
 
-    variable_prompt = "raw_label_tokenmax_var"
-    generations = sorted(set.intersection(*(set(by_prompt[prompt]) for prompt in PROMPTS)))
+    contrasts = []
+    for offset, (name, left, right) in enumerate(CONTRASTS):
+        result = bootstrap_paired(cells[left], cells[right], args.bootstrap_samples, 20260900 + offset)
+        result.update({"contrast": name, "left": DISPLAY[left], "right": DISPLAY[right]})
+        contrasts.append(result)
 
-    def paired_contrast(left_prompt, right_prompt, name, seed_offset=0):
-        paired = {}
-        for seed in generations:
-            left = by_prompt[left_prompt][seed]
-            right = by_prompt[right_prompt][seed]
-            if len(left) != len(right):
-                raise ValueError(f"Classifier repeat mismatch at generation seed {seed}")
-            paired[seed] = [right_value - left_value for right_value, left_value in zip(right, left)]
-        result = bootstrap_paired(paired, args.bootstrap_samples, seed=20260814 + seed_offset)
-        result["contrast"] = name
-        result["population"] = "all_classes"
-        return result
+    integrity, checkpoint_identity = integrity_audit(index)
+    strata = []
+    for stratum in ("all", "short", "long"):
+        subset = integrity if stratum == "all" else [row for row in integrity if row["caption_stratum"] == stratum]
+        if subset:
+            strata.append({
+                "caption_stratum": stratum,
+                "slots": len(subset),
+                "slot_fraction": len(subset) / len(integrity),
+                "e_equals_a_png_fraction": statistics.fmean(row["e_equals_a_png"] for row in subset),
+                "e_wrapped_equals_a_png_fraction": statistics.fmean(row["e_wrapped_equals_a_png"] for row in subset),
+                "e_wrapped_equals_e_png_fraction": statistics.fmean(row["e_wrapped_equals_e_png"] for row in subset),
+                "d_var_equals_d_pad_png_fraction": statistics.fmean(row["d_var_equals_d_pad_png"] for row in subset),
+            })
 
-    primary = paired_contrast(
-        "label", variable_prompt,
-        "raw_label_tokenmax_var_minus_raw_label_pad77",
+    write_csv(output / "six_cell_performance.csv", performance)
+    write_csv(output / "six_cell_paired_contrasts.csv", contrasts)
+    write_csv(output / "six_cell_integrity.csv", integrity)
+    write_csv(output / "six_cell_integrity_summary.csv", strata)
+    summary = {
+        "format_version": 1,
+        "matrix": {
+            "a_pad77": "raw Label in one padded 77-position block",
+            "e_raw_empty": "Label plus raw/padding-derived empty tail blocks",
+            "e_wrapped": "Label plus independently BOS/EOS-wrapped empty tail blocks",
+            "c_t77": "Correct DCS truncated/padded to one 77-position block",
+            "d_pad77_chunks": "full Correct DCS rounded to 77-position chunks",
+            "d_variable_official": "full Correct DCS at exact shared CFG token length",
+        },
+        "performance": performance,
+        "paired_contrasts": contrasts,
+        "integrity_summary": strata,
+        "checkpoint_identity": checkpoint_identity,
+        "interpretation_boundary": (
+            "All six cells share checkpoint, visual prototypes, image seeds, generation seeds, "
+            "classifier repeats, CFG scale, and denoising schedule. Tail block count for e and "
+            "e_wrapped follows the paired Correct-DCS caption independently per generated slot."
+        ),
+    }
+    (output / "six_cell_summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    primary["contrast"] = "raw_label_tokenmax_var_minus_raw_label_pad77"
-    semantic_contrasts = [
-        paired_contrast(
-            "label", "correct_t77",
-            "correct_dcs_t77_minus_raw_label_pad77", 10,
-        ),
-        paired_contrast(
-            variable_prompt, "correct_t77",
-            "correct_dcs_t77_minus_raw_label_tokenmax_var", 20,
-        ),
+
+    lines = [
+        "# Six-cell conditioning-layout control", "", "## Performance", "",
+        "| Cell | Prompt | Mean | 95% paired-bootstrap CI |", "|---|---|---:|---:|",
     ]
-
-    sequence_rows = []
-    run_root = index_path.parent
-    protocol_rows = {}
-    for prompt in PROMPTS:
-        lengths = []
-        for seed in generations:
-            records_path = (
-                run_root / "synthetic" / f"seed_{seed}" / f"matched_ft_{prompt}"
-                / "prompt_records.json"
-            )
-            records = json.loads(records_path.read_text(encoding="utf-8"))
-            lengths.extend(int(row["conditioning_sequence_length"]) for row in records)
-            if prompt == variable_prompt:
-                for row in records:
-                    protocol_rows.setdefault(row["synset"], {
-                        "synset": row["synset"],
-                        "raw_label": row["prompt"],
-                        "positive_whitespace_words": row["positive_whitespace_words"],
-                        "negative_whitespace_words": row["negative_whitespace_words"],
-                        "positive_clip_tokens": row["positive_clip_tokens"],
-                        "negative_clip_tokens": row["negative_clip_tokens"],
-                        "tokenmax_shared_length": row["tokenmax_shared_length"],
-                        "official_whitespace_selected_branch": row[
-                            "official_whitespace_selected_branch"
-                        ],
-                        "tokenmax_selected_branch": row["tokenmax_selected_branch"],
-                        "official_branch_disagrees_with_tokenmax": row[
-                            "official_branch_disagrees_with_tokenmax"
-                        ],
-                        "official_whitespace_would_shape_mismatch": row[
-                            "official_whitespace_would_shape_mismatch"
-                        ],
-                    })
-        sequence_rows.append({
-            "prompt": prompt,
-            "sequence_length_mean": statistics.fmean(lengths),
-            "sequence_length_min": min(lengths),
-            "sequence_length_max": max(lengths),
-            "records": len(lengths),
-        })
-
-    mismatch_classes = {
-        synset for synset, row in protocol_rows.items()
-        if row["official_whitespace_would_shape_mismatch"]
-    }
-    all_classes = set(protocol_rows)
-    populations = {
-        "all_classes": all_classes,
-        "heuristic_compatible_classes": all_classes - mismatch_classes,
-        "heuristic_mismatch_classes": mismatch_classes,
-    }
-    primary["classes"] = len(all_classes)
-    population_contrasts = [primary]
-    for population, classes in populations.items():
-        if population == "all_classes" or not classes:
-            continue
-        population_paired = {}
-        for generation in generations:
-            padded_repeats = per_class["label"][generation]
-            variable_repeats = per_class[variable_prompt][generation]
-            if len(padded_repeats) != len(variable_repeats):
-                raise ValueError(f"Per-class repeat mismatch at generation seed {generation}")
-            population_paired[generation] = [
-                statistics.fmean(variable[class_name] - padded[class_name] for class_name in classes)
-                for padded, variable in zip(padded_repeats, variable_repeats)
-            ]
-        result = bootstrap_paired(
-            population_paired, args.bootstrap_samples,
-            seed=20260814 + len(population_contrasts),
-        )
-        result.update({
-            "contrast": "raw_label_tokenmax_var_minus_raw_label_pad77",
-            "population": population,
-            "classes": len(classes),
-        })
-        population_contrasts.append(result)
-
-    write_csv(output / "performance.csv", performance)
-    all_contrasts = population_contrasts + semantic_contrasts
-    write_csv(output / "paired_contrast.csv", all_contrasts)
-    write_csv(output / "conditioning_lengths.csv", sequence_rows)
-    write_csv(output / "label_length_by_class.csv", list(protocol_rows.values()))
-    report_lines = [
-        "# Raw-label conditioning-length and Correct-DCS t77 report",
-        "",
-        "- Positive condition: exact ImageNet class string.",
-        "- Negative condition: `cartoon, anime, painting`.",
-        "- Variable arm: both branches padded to the larger actual CLIP-token length.",
-        "- Correct-DCS t77 arm: paired cluster-specific caption in one 77-position block.",
-        "- Official whitespace heuristic is audited but never used for generation.",
-        "",
-        "## Paired downstream contrasts",
-        "",
-        "| Population | Classes | Mean | 95% CI |",
-        "|---|---:|---:|---:|",
-    ]
-    for row in all_contrasts:
-        report_lines.append(
-            f"| {row['population']} | {row.get('classes', len(all_classes))} | "
-            f"{row['mean_difference']:.3f} | "
+    for row in performance:
+        lines.append(
+            f"| {row['cell']} | {row['prompt']} | {row['mean_accuracy']:.3f} | "
             f"[{row['bootstrap_ci95_lower']:.3f}, {row['bootstrap_ci95_upper']:.3f}] |"
         )
-    report_lines.extend([
-        "",
-        "## Protocol audit",
-        "",
-        f"- Classes: {len(all_classes)}",
-        f"- Official whitespace/token ordering disagreements: "
-        f"{sum(bool(row['official_branch_disagrees_with_tokenmax']) for row in protocol_rows.values())}",
-        f"- Official whitespace shape mismatches: {len(mismatch_classes)}",
-        "- Mismatch synsets: " + (", ".join(sorted(mismatch_classes)) or "none"),
-        "",
-    ])
-    (output / "REPORT.md").write_text("\n".join(report_lines), encoding="utf-8")
-    (output / "summary.json").write_text(json.dumps({
-        "format_version": 2,
-        "performance": performance,
-        "primary": primary,
-        "population_sensitivity": population_contrasts,
-        "semantic_contrasts": semantic_contrasts,
-        "conditioning_lengths": sequence_rows,
-        "official_heuristic_audit": {
-            "ordering_disagreement_classes": sum(
-                bool(row["official_branch_disagrees_with_tokenmax"])
-                for row in protocol_rows.values()
-            ),
-            "shape_mismatch_classes": len(mismatch_classes),
-            "shape_mismatch_synsets": sorted(mismatch_classes),
-        },
-        "interpretation_boundary": (
-            "Both arms use identical text, visual prototypes, image seeds, generation seeds, "
-            "and classifier repeats. Only the valid shared SD1.5 conditioning length differs. "
-            "The official whitespace heuristic is not a generation arm because it is undefined "
-            "for labels where it selects the token-shorter CFG branch."
-        ),
-    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    lines.extend(["", "## Paired contrasts", "", "| Contrast | Mean | 95% CI |", "|---|---:|---:|"])
+    for row in contrasts:
+        lines.append(
+            f"| {row['contrast']} | {row['mean_difference']:.3f} | "
+            f"[{row['bootstrap_ci95_lower']:.3f}, {row['bootstrap_ci95_upper']:.3f}] |"
+        )
+    lines.extend(["", f"Checkpoint identity: `{json.dumps(checkpoint_identity, sort_keys=True)}`", ""])
+    (output / "SIX_CELL_REPORT.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 if __name__ == "__main__":

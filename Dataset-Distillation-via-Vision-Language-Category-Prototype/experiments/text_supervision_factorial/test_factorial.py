@@ -169,6 +169,30 @@ class AssignmentTests(unittest.TestCase):
         self.assertTrue(torch.equal(a, e))
         self.assertTrue(torch.equal(a_negative, e_negative))
 
+    def test_wrapped_empty_control_restarts_bos_eos_in_every_tail_block(self):
+        positive, negative = get_pipeline_embeds(
+            FakePipe(), "class label", "negative", "cpu",
+            policy="wrapped_empty_extended", target_chunks=3,
+        )
+        empty, _ = get_pipeline_embeds(
+            FakePipe(), "", "", "cpu", policy="single"
+        )
+        self.assertEqual(tuple(positive.shape), (1, 231, 3))
+        self.assertTrue(torch.equal(positive[:, 77:154], empty))
+        self.assertTrue(torch.equal(positive[:, 154:], empty))
+        self.assertTrue(torch.equal(positive[:, 77:], negative[:, 77:]))
+        # Unlike a raw padding tail, the wrapped block contains BOS and EOS.
+        self.assertGreater(torch.count_nonzero(positive[:, 77:]).item(), 0)
+
+    def test_tokenmax_variable_uses_exact_shared_cfg_length(self):
+        positive, negative = get_pipeline_embeds(
+            FakePipe(), "word " * 80, "negative", "cpu",
+            policy="tokenmax_variable",
+        )
+        # 80 content tokens plus BOS/EOS, not rounded up to 154 positions.
+        self.assertEqual(tuple(positive.shape), (1, 82, 3))
+        self.assertEqual(tuple(negative.shape), (1, 82, 3))
+
     def test_cfg_branch_metrics_are_recorded_separately(self):
         unconditional = torch.zeros(1, 1, 1, 2)
         conditional = torch.tensor([[[[3.0, 4.0]]]])
