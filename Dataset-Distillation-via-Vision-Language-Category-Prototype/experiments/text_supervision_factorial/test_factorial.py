@@ -17,6 +17,7 @@ from generate_factorial import (  # noqa: E402
     first_sentence,
     get_pipeline_embeds,
     planned_guidance_timesteps,
+    prompt_for,
     schedule_matched_noise,
     text_chunk_count,
     tokenmax_shared_length,
@@ -79,6 +80,24 @@ class FakeScheduledPipe(FakePipe):
 
 
 class AssignmentTests(unittest.TestCase):
+    def test_bank_t77_uses_same_caption_selection_with_single_block_policy(self):
+        bank = {
+            "classes": {
+                "class": [
+                    {"caption": "first bank caption", "relative": "class/0.jpg"},
+                    {"caption": "second bank caption", "relative": "class/1.jpg"},
+                ]
+            }
+        }
+        prompt, source, relative, policy, reference = prompt_for(
+            "class", 0, 3, "bank_t77", {"class": ["reference"]}, 1, bank
+        )
+        self.assertEqual(prompt, "second bank caption")
+        self.assertEqual(source, 1)
+        self.assertEqual(relative, "class/1.jpg")
+        self.assertEqual(policy, "single")
+        self.assertEqual(reference, "reference")
+
     def test_first_sentence_and_chunk_count(self):
         self.assertEqual(first_sentence("One sentence. Another sentence."), "One sentence.")
         self.assertEqual(first_sentence("No punctuation"), "No punctuation")

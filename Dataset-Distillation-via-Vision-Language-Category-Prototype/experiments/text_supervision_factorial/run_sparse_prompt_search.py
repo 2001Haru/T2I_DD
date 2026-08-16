@@ -52,7 +52,10 @@ def parse_args():
     parser.add_argument("--bank-seeds", type=int, nargs="+", default=(0, 1))
     parser.add_argument("--training-seed", type=int, default=0)
     parser.add_argument("--generation-seeds", type=int, nargs="+", default=(0, 1))
-    parser.add_argument("--prompts", nargs="+", choices=("label", "bank"), default=("label", "bank"))
+    parser.add_argument(
+        "--prompts", nargs="+", choices=("label", "bank", "bank_t77"),
+        default=("label", "bank"),
+    )
     parser.add_argument("--ipc", type=int, default=50)
     parser.add_argument("--strength", type=float, default=0.8)
     parser.add_argument("--classifier-repeats", type=int, default=2)
@@ -253,6 +256,12 @@ def main():
         "prompts": list(args.prompts),
         "ipc": args.ipc, "strength": args.strength,
         "classifier_repeats": args.classifier_repeats,
+        "training_text_interface": "CLIP T77 truncation and max-length padding",
+        "inference_text_interfaces": {
+            "label": "CLIP T77 truncation and max-length padding",
+            "bank": "legacy multi-chunk conditioning",
+            "bank_t77": "CLIP T77 truncation and max-length padding",
+        },
         "no_walltime_limit": True,
     }
     manifest_path = root / "run_manifest.json"

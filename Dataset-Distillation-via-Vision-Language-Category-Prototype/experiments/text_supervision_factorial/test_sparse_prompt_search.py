@@ -65,6 +65,24 @@ class SparsePromptSearchTests(unittest.TestCase):
             self.assertEqual(sum(task.kind == "generate" for task in tasks.values()), 16)
             self.assertEqual(sum(task.kind == "eval" for task in tasks.values()), 32)
 
+    def test_high_budget_t77_search_has_expected_grid(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = Namespace(
+                run_root=str(root), bank_seeds=(0, 1), budgets=(64, 128, 256, 512),
+                generation_seeds=(0, 1), training_seed=0, data_root=str(root / "data"),
+                caption_file=str(root / "captions.jsonl"), base_model=str(root / "sd15"),
+                prototype=str(root / "prototype.json"), dcs=str(root / "dcs.json"),
+                ipc=50, strength=0.8, classifier_repeats=2, classifier_seed=0,
+                train_batch_size=8, gradient_accumulation_steps=4, num_workers=2,
+                mixed_precision="fp16", prompts=("label", "bank_t77"),
+            )
+            tasks, index = build_tasks(args)
+            self.assertEqual(len(tasks), 56)
+            self.assertEqual(len(index), 32)
+            self.assertEqual({row["budget"] for row in index}, {64, 128, 256, 512})
+            self.assertEqual({row["prompt"] for row in index}, {"label", "bank_t77"})
+
     def test_label_only_summary_completes_without_bank_rows(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -85,6 +103,41 @@ class SparsePromptSearchTests(unittest.TestCase):
             self.assertEqual(summary["available_prompts"], ["label"])
             self.assertEqual(summary["bank_minus_label"], [])
             self.assertEqual(summary["saturation"], [])
+
+    def test_t77_bank_summary_uses_t77_condition(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            rows = []
+            for bank_seed in (0, 1):
+                for generation_seed in (0, 1):
+                    for budget in (64, 512):
+                        for prompt, offset in (("label", 0), ("bank_t77", 1)):
+                            log = root / f"b{bank_seed}_g{generation_seed}_m{budget}_{prompt}.log"
+                            value = 70 + offset + budget / 512
+                            log.write_text(
+                                f"Best, last acc:----[{value}, {value + 1}]\n",
+                                encoding="utf-8",
+                            )
+                            rows.append({
+                                "bank_seed": bank_seed, "budget": budget,
+                                "generation_seed": generation_seed, "prompt": prompt,
+                                "evaluation_log": str(log),
+                            })
+            index = root / "index.json"
+            index.write_text(json.dumps(rows), encoding="utf-8")
+            output = root / "summary"
+            subprocess.run([
+                sys.executable, str(HERE / "summarize_sparse_prompt_search.py"),
+                "--evaluation-index", str(index), "--output-dir", str(output),
+                "--bootstrap-samples", "20",
+            ], check=True)
+            summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary["bank_inference_prompt"], "bank_t77")
+            self.assertTrue(all(
+                row["contrast"] == "bank_t77_minus_label"
+                for row in summary["bank_minus_label"]
+            ))
+            self.assertTrue((output / "saturation_vs_maximum.csv").is_file())
 
     def test_label_budget_summary_preserves_cross_budget_pairing(self):
         with tempfile.TemporaryDirectory() as temporary:

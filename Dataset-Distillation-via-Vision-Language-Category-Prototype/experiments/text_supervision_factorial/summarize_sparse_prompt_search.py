@@ -187,13 +187,16 @@ def main():
                 "classifier_observations": len(flattened),
             })
 
+    bank_prompt = "bank_t77" if "bank_t77" in available_prompts else (
+        "bank" if "bank" in available_prompts else None
+    )
     contrasts = []
-    if {"label", "bank"}.issubset(available_prompts):
+    if "label" in available_prompts and bank_prompt:
         for budget in sorted({row["budget"] for row in cells}):
             paired_rows = []
             for bank_seed in sorted({row["bank_seed"] for row in cells}):
                 for generation_seed in sorted({row["generation_seed"] for row in cells}):
-                    bank = by_key[(bank_seed, budget, generation_seed, "bank")]
+                    bank = by_key[(bank_seed, budget, generation_seed, bank_prompt)]
                     label = by_key[(bank_seed, budget, generation_seed, "label")]
                     paired_rows.append({
                         "bank_seed": bank_seed, "generation_seed": generation_seed,
@@ -204,7 +207,7 @@ def main():
             )
             values = [value for row in paired_rows for value in row["differences"]]
             contrasts.append({
-                "budget": budget, "contrast": "bank_minus_label",
+                "budget": budget, "contrast": f"{bank_prompt}_minus_label",
                 "mean_difference": statistics.fmean(values),
                 "bootstrap_ci_lower": lower, "bootstrap_ci_upper": upper,
                 "bank_generation_cells": len(paired_rows),
@@ -212,14 +215,14 @@ def main():
             })
 
     saturation = []
-    if "bank" in available_prompts:
+    if bank_prompt:
         maximum = max(row["budget"] for row in cells)
         for budget in sorted({row["budget"] for row in cells}):
             paired_rows = []
             for bank_seed in sorted({row["bank_seed"] for row in cells}):
                 for generation_seed in sorted({row["generation_seed"] for row in cells}):
-                    current = by_key[(bank_seed, budget, generation_seed, "bank")]
-                    endpoint = by_key[(bank_seed, maximum, generation_seed, "bank")]
+                    current = by_key[(bank_seed, budget, generation_seed, bank_prompt)]
+                    endpoint = by_key[(bank_seed, maximum, generation_seed, bank_prompt)]
                     paired_rows.append({
                         "bank_seed": bank_seed, "generation_seed": generation_seed,
                         "differences": [left - right for left, right in zip(current, endpoint)],
@@ -258,12 +261,14 @@ def main():
         ),
     )
     write_csv(
-        output / "saturation_vs_m32.csv", saturation,
+        output / "saturation_vs_maximum.csv", saturation,
         saturation[0].keys() if saturation else (
             "budget", "reference_budget", "contrast", "mean_difference",
             "bootstrap_ci_lower", "bootstrap_ci_upper", "noninferior_within_1pt_by_95pct_ci",
         ),
     )
+    if saturation and max(row["budget"] for row in saturation) == 32:
+        write_csv(output / "saturation_vs_m32.csv", saturation, saturation[0].keys())
     write_csv(
         output / "label_budget_regression.csv", label_budget_analysis,
         label_budget_analysis[0].keys() if label_budget_analysis else (
@@ -284,6 +289,7 @@ def main():
         "label_budget_analysis": label_budget_analysis,
         "bootstrap_order": "bank seed -> generation seed -> paired classifier repeat",
         "selection_design": "nested random class-caption banks",
+        "bank_inference_prompt": bank_prompt,
         "available_prompts": available_prompts,
     }
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")

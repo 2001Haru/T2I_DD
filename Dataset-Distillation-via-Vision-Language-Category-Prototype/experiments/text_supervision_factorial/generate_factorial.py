@@ -28,6 +28,7 @@ from common import (  # noqa: E402
 GENERATION_SUPERVISION_MODES = SUPERVISION_MODES + ("sparse_ft",)
 GENERATION_PROMPT_MODES = PROMPT_MODES + (
     "bank",
+    "bank_t77",
     "label_var",
     "raw_label_tokenmax_var",
     "first_sentence",
@@ -325,12 +326,12 @@ def prompt_for(synset, index, image_index, mode, dcs, shift, prompt_bank):
         return IMAGENET2012_CLASSES[synset], None, None, "wrapped_empty_extended", correct
     if mode == "correct_tokenmax_var":
         return correct, index, None, "tokenmax_variable", correct
-    if mode == "bank":
+    if mode in {"bank", "bank_t77"}:
         entries = prompt_bank["classes"][synset]
         source = image_index % len(entries)
         return (
             str(entries[source]["caption"]), source, entries[source]["relative"],
-            "chunked", correct,
+            "single" if mode == "bank_t77" else "chunked", correct,
         )
     source = index if mode == "correct" else shuffled_prompt_index(index, len(dcs[synset]), shift)
     return str(dcs[synset][source]), source, None, "chunked", correct
@@ -553,9 +554,9 @@ def main():
     prototypes, dcs = load_json(prototype_path), load_json(dcs_path)
     validate(prototypes, dcs, args.ipc, args.shuffle_shift)
     prompt_bank = load_json(Path(args.prompt_bank).resolve()) if args.prompt_bank else None
-    if "bank" in args.prompts:
+    if {"bank", "bank_t77"}.intersection(args.prompts):
         if prompt_bank is None:
-            raise ValueError("The bank prompt mode requires --prompt-bank")
+            raise ValueError("Bank prompt modes require --prompt-bank")
         if set(prompt_bank.get("classes", {})) != set(prototypes):
             raise ValueError("Prompt-bank and prototype classes differ")
     output_root = Path(args.output_root).resolve()
