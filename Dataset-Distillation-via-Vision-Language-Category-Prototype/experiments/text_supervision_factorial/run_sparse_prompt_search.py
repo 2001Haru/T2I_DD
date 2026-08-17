@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Persistent four-GPU scheduler for nested sparse unpaired-caption search."""
+"""Persistent multi-GPU scheduler for nested sparse unpaired-caption search."""
 
 import argparse
 import json
@@ -265,9 +265,30 @@ def main():
         "no_walltime_limit": True,
     }
     manifest_path = root / "run_manifest.json"
-    if manifest_path.is_file() and json.loads(manifest_path.read_text(encoding="utf-8")) != manifest:
-        raise RuntimeError(f"Resume configuration differs from {manifest_path}")
-    if not manifest_path.is_file():
+    if manifest_path.is_file():
+        previous_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        # GPU allocation is scheduler state, not part of the scientific protocol.
+        # Allow interrupted runs to resume on a different number or set of GPUs.
+        previous_protocol = {key: value for key, value in previous_manifest.items() if key != "gpus"}
+        current_protocol = {key: value for key, value in manifest.items() if key != "gpus"}
+        if previous_protocol != current_protocol:
+            differing_keys = sorted(
+                key for key in set(previous_protocol) | set(current_protocol)
+                if previous_protocol.get(key) != current_protocol.get(key)
+            )
+            raise RuntimeError(
+                f"Resume configuration differs from {manifest_path}: {', '.join(differing_keys)}"
+            )
+        if previous_manifest.get("gpus") != gpus:
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            print(
+                f"Resume GPU allocation changed from {previous_manifest.get('gpus')} to {gpus}; "
+                "scientific configuration is unchanged",
+                flush=True,
+            )
+    else:
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     (root / "evaluation_index.json").write_text(json.dumps(index, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 

@@ -83,6 +83,11 @@ class SparsePromptSearchTests(unittest.TestCase):
             self.assertEqual({row["budget"] for row in index}, {64, 128, 256, 512})
             self.assertEqual({row["prompt"] for row in index}, {"label", "bank_t77"})
 
+    def test_resume_manifest_can_change_gpu_allocation(self):
+        source = (HERE / "run_sparse_prompt_search.py").read_text(encoding="utf-8")
+        self.assertIn('if key != "gpus"', source)
+        self.assertIn("Resume GPU allocation changed", source)
+
     def test_label_only_summary_completes_without_bank_rows(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
