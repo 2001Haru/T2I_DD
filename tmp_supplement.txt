@@ -1,0 +1,308 @@
+Supplementary Materials to “Dataset Distillation via Vision-Language Category
+                                Prototype”
+
+
+
+
+   The supplementary material is organized as follows:               proximate the real data. For instance, distribution matching
+Section 1 provides detailed related works; Section 2                 minimizes the divergence between the two distributions by
+presents the implementation details of generating textual            employing Maximum Mean Discrepancy (MMD) [27] met-
+descriptions using the LLaVA model used in this paper;               rics and is further extended by CAFE [19].
+Section 3 shows the details of diffusion model training; Sec-            Though the methods mentioned above have achieved sig-
+tion 4 presents implementation details of outlier removal            nificant progress in dataset distillation, generating synthetic
+and image prototypes; Section 5 presents more analysis and           datasets often requires high computational costs, and the
+discussion; Section 6 provides detailed settings of hyper-           time involved increases rapidly with large-scale datasets.
+parameters; and finally, Section 7 presents generated sam-           For instance, MTT distills images with IPC 50 on CIFAR10,
+ples of different datasets.                                          requiring 47GB of GPU memory, making it impractical for
+                                                                     large-scale datasets like ImageNet-1K [24]. Hence, several
+1. Related Works                                                     studies have leveraged generative models [4, 16] in dataset
+                                                                     distillation to optimize latent features instead of image pix-
+1.1. Dataset Distillation                                            els, thereby achieving a faster training process and enhanc-
+DD aims to synthesize information-dense, small datasets              ing performance. For instance, IT-GAN [26] employs pre-
+that effectively serve as alternatives to large-scale datasets       trained GAN as an informative training sample generator,
+for downstream tasks such as classification [6, 23], achiev-         which only needs to optimize latent features rather than im-
+ing performance comparable to that of the original data              age pixels. Su et al. [16] integrated the diffusion model
+[20, 24]. Previous methods for DD primarily include meta-            into DD to obtain embedding features, after which K-means
+learning based and matching based frameworks [8]. In                 clustering is applied to each class. The cluster centers then
+meta-learning based method, distilled data are optimized as          serve as prototypes and, along with label texts, are fed into
+hyperparameters within a bi-level framework, where syn-              the diffusion model for image generation. However, ex-
+thetic data are iteratively updated in an outer loop by min-         isting diffusion models for dataset distillation often pro-
+imizing the meta-test loss on the real dataset, while an in-         duce unrealistic images or images with absent target objects
+ner loop concurrently trains the model on the synthetic data         and exhibit co-occurrence bias. Our study overcomes these
+[14, 20, 28]. Meta-learning methods are categorized into             challenges by integrating text descriptions, enhancing logi-
+two sub-categories based on inner-loop optimization: back-           cal coherence, and mitigating bias.
+propagation through time [2, 17, 20] and kernel ridge re-
+gression [13, 14] approach.
+                                                                     1.2. Vision-Language
+    In contrast to the previously outlined meta-learning             Vision-Language (VL) is a multimodal learning approach
+method, matching based methods refine distilled images via           that enables models to process and understand both vi-
+parameter matching and distribution matching [3]. Specif-            sual (e.g., images and videos) and language (e.g., text
+ically, parameter matching focuses on aligning model pa-             and speech) information simultaneously, allowing for cross-
+rameters of the original dataset and synthetic dataset, both         modal understanding and reasoning beyond traditional uni-
+of which are trained based on the same network architec-             modal models. Most multimodal methods project images
+ture. Zhao et al. [25] first proposed this approach to dis-          and text into a shared embedding space, enabling the mea-
+tilled images by matching the gradients computed on the              surement of similarities between learned representations
+synthetic dataset and real data, which is further developed          across diverse modalities, such as CLIP [15], BLIP [9]
+through the following studies [1, 7]. Unlike encouraging             ALIGN [5]. These methods are foundational in enabling
+the consistency of trained neural parameters, distribution           robust image-text alignment. Recent studies have extended
+matching approaches directly align the distribution of syn-          these methods to multimodal dataset distillation. For in-
+thetic and real images in the feature space to closely ap-           stance, Wu et al. [21] leverage low-rank adaptation to match
+
+
+                                                                 1
+bi-trajectory in complex modern vision-language models.
+Similarly, Xu et al. [22] distill a ground truth similarity
+matrix from image-text pairs and employ low-rank factor-
+ization to improve efficiency and scalability. However, the
+absence of paired text in most datasets makes it challeng-
+ing to apply the aforementioned methods, as they require
+multimodal alignment to achieve effective distillation.
+   To address this limitation, our method generates paired
+text for unimodal data via LLaVA [10–12] and integrates
+text prototypes with image prototypes to facilitate dataset
+distillation. This approach addresses the limitation of miss-
+ing text in unimodal datasets while enabling flexible and
+scalable dataset distillation. Unlike prior methods [21, 22],          Figure 1. A sample of an English Springer Spaniel.
+which rely on image-text paired data for multimodal align-
+ment, our approach is specifically tailored for datasets with-
+out textual annotations. By generating paired text and intro-    additional information not immediately apparent. By pro-
+ducing text prototypes, our method achieves alignment be-        viding such comprehensive and nuanced details, the textual
+tween visual and textual information at the prototype level,     descriptions contribute valuable insights that cannot be cap-
+creating a unified representation that improves the effective-   tured by conventional image prototypes, thereby enriching
+ness of the distillation process. This innovation demon-         the depth of the analysis.
+strates the high adaptability of our approach to a broader
+range of datasets compared to existing methods.                  3. Diffusion Model Training
+2. Implementation of Generating Textual De-                      In this study, we fine-tune the benjamin-paine/stable-
+                                                                 diffusion-v1-5 model using paired image-text datasets gen-
+    scriptions Using the LLaVA Model                             erated by LLaVA. To ensure robustness and model gen-
+In this study, we employ the LLaVA model                         eralization, each dataset is trained with three distinct ran-
+(liuhaotian/llava-v1.5-7b) [10–12] to generate textual           dom seeds, resulting in three independently fine-tuned dif-
+descriptions for visual inputs. The model is run under           fusion models per dataset. All datasets are trained accord-
+default configurations, including a sampling temperature of      ing to the parameters specified in Table 1, except for the
+0.2 and a beam search with a single beam (num beams=1).          input resolution: 512 for ImageNet-1K and its subsets (Im-
+The generated textual descriptions are systematically stored     ageWoof, ImageNette, ImageIDC, ImageNet-100), 32 for
+for downstream analysis. All datasets follow a standardized      CIFAR-10/100, and 64 for Tiny-ImageNet.
+prompt format to guide the model in generating the textual
+descriptions:                                                                  Settings                     Values
+    Prompt = “Describe the physical appearance of the                      train batch size                    8
+{$CLASSNAME} in the image. Include details about its                      validation epochs                    2
+shape, posture, color, and any distinct features.”                     number of training epochs              8
+                                                                             learning rate                 1.0e-05
+    Below is a sample of an English Springer Spaniel, along              Adam weight decay                   0.01
+with the corresponding description generated by the model:                  augmentation           center crop, random flip
+
+    Description = “The English springer spaniel in the image               Table 1. Diffusion model training settings.
+is a small, white and brown dog with a short, curly coat. It
+has a distinctive shape, with a long body and a curved tail.
+The dog appears to be in a relaxed posture, walking through      4. Outlier Removal and Image Prototypes
+the grass with its tongue out, which is a common behav-
+ior for dogs when they are enjoying themselves or feeling        In contrast to other outlier detection methods, the Local
+comfortable. The dog’s coloration is predominantly white         Outlier Factor (LOF) is an unsupervised algorithm that
+with brown markings, which is a common characteristic of         does not require labeled data, making it particularly suit-
+English springer spaniels.”                                      able for detecting anomalies in datasets with complex or
+    The generated textual descriptions adhere to the stan-       unknown structures. LOF assesses the local density of
+dardized prompt, providing detailed accounts of the object’s     data points to identify instances that significantly deviate
+shape, posture, color, and distinct features. These descrip-     from their surrounding neighbors. For the LOF algorithm,
+tions go beyond the visual content of the image, offering        two parameters are configured: the number of neighbors
+                                      (a)                                                      (b)
+
+Figure 2. T-SNE visualizations of the bonnet class from ImageIDC. (a) Cluster centers obtained from K-means clustering on the original
+data. (b) Cluster centers after applying Local Outlier Factor (LOF) to remove outliers, followed by K-means clustering.
+
+
+(n neighbors = 10) is consistently applied across all                 sis of state-of-the-art methods, including Random, Herding,
+datasets to maintain uniformity in local density estimation,          IDC-1, Minimax, D4M, and our proposed approach (Ours),
+while the contamination parameter is adjusted according to            across various model architectures and IPC settings. To en-
+the specific characteristics of each dataset—set to 0.0 for           sure a fair comparison across methods, all images are re-
+ImageWoof, 0.1 for ImageIDC, 0.01 for ImageNette, and                 sized to 256 × 256. Although IDC-1 achieves the best per-
+0.1 for ImageNet-100.                                                 formance at IPC = 10, our method outperforms IDC-1 at
+    As shown in Fig. 2, outlier removal improves clustering           IPC = 20. Moreover, our approach consistently surpasses
+performance. In the original dataset (Fig. 2-(a)), K-means            Minimax under both IPC = 10 and IPC = 20 settings.
+clustering resulted in several cluster centers being densely
+concentrated in specific regions, indicating poor cluster sep-         IPC   Test Model    Random     Herding    IDC-1      Minimax     D4M        Ours
+
+aration and potential overlap among clusters. This outcome                    ConvNet-6    17.0±0.3   17.2±0.3   24.3±0.5   20.1±0.3   18.5±0.8   22.3±0.2
+                                                                       10    ResNetAP-10   19.1±0.4   19.8±0.3   25.7±0.1   21.5±0.3   20.0±0.4   24.5±0.1
+suggests that the presence of outliers adversely affected the                 ResNet-18    17.5±0.5   16.1±0.2   25.1±0.2   20.1±0.9   18.5±1.2   23.3±0.5
+clustering process, leading to suboptimal partitioning of                     ConvNet-6    24.8±0.2   24.3±0.4   28.8±0.3   25.9±0.4   25.0±0.6   29.3±0.6
+                                                                       20    ResNetAP-10   26.7±0.5   27.6±0.1   29.9±0.2   27.0±0.4   27.3±0.6   32.3±0.6
+the data. However, after applying LOF to eliminate out-                       ResNet-18    25.5±0.3   24.7±0.1   30.2±0.2   26.4±0.3   26.6±0.6   31.5±1.1
+liers (Fig. 2-(b)), the cluster centers appeared more dis-
+tinctly separated and uniformly distributed across the fea-           Table 2. Comparison of state-of-the-art methods on ImageNet-
+ture space. This clearer separation reflects a more accurate          100 under various IPC settings and model architectures. The best
+representation of the underlying data structure, allowing K-          results are marked as bold, and the second-best are underlined.
+means to perform more effectively.
+    Following outlier removal, K-means clustering is applied             Tiny-ImageNet We evaluate our method on the Tiny-
+to each class individually, with the resulting cluster cen-           ImageNet dataset consisting of 200 classes, each contain-
+ters designated as image prototypes. The clustering process           ing 500 training images at 64 × 64 pixels. Table 3 presents
+is configured with random state set to the correspond-                the performance of different methods under IPC values, fol-
+ing seed for reproducibility, n init = 10 to ensure sta-              lowing the validation protocol of RDED [18]. When IPC =
+bility in clustering outcomes, and the number of clusters             10, our method achieves an accuracy of 42.6%, slightly sur-
+(n clusters) determined by the images-per-class (IPC) set-            passing RDED (41.9%), while SRe2L exhibits significantly
+ting. Specifically, when IPC = 10, the number of clusters is          lower performance (16.1%). At IPC = 50, RDED reaches
+set to 10. This approach ensures that the prototypes effec-           the highest accuracy (58.2%), whereas our method achieves
+tively capture the representative features of each class after        55.5%, outperforming SRe2L (41.1%). These results indi-
+noise reduction.                                                      cate that our approach is competitive in low IPC but has
+                                                                      room for improvement as IPC increases.
+5. More Analysis and Discussion
+                                                                      6. Hyper-Parameters Settings
+ImageNet-100 Beyond the previously mentioned 10-class
+ImageNet subsets, we also conduct experiments on the more             In addition to the parameters α (Contamination), β (Non-
+challenging ImageNet-100, with the results presented in Ta-           representative Threshold), and k (Topk words) used in the
+ble 2. This table provides a detailed performance analy-              generation of text prototypes, the diffusion model with text
+     Dataset          IPC        SRe2L        RDED           Ours                      Settings                    Values
+                      10         16.1±0.2    41.9±0.2       42.6±0.2                contamination                    0.0
+ Tiny-ImageNet
+                      50         41.1±0.4    58.2±0.1       55.5±0.6          nonrepresentative threshold            0.7
+                                                                                     topk words                      30
+Table 3. Comparison of state-of-the-art methods on Tiny-                            guidance scale                   10
+ImageNet under various IPC settings.                                                    strength                    0.7
+                                                                                  synthetic image size              224
+                                                                                   valuation method                RDED
+prompts involves two hyperparameters: strength (0 < s <
+1) and guidance scale (g > 1). Strength controls the de-                         Table 5. Parameter settings of ImageNet-1K.
+gree of modification applied to the input image based on the
+text prompt, with lower values resulting in minimal modi-
+                                                                                       Settings                    Values
+fication, preserving the original image, and higher values
+leading to a stronger alignment with the prompt. Guidance                           contamination                    0.0
+scale determines the extent to which the model adheres to                     nonrepresentative threshold          0.8/0.2
+the text prompt during image generation. Lower values en-                            topk words                      30
+courage more diverse outputs, while higher values enforce                           guidance scale                   10
+stricter alignment with the prompt.                                                     strength                     0.7
+    For a fair comparison, ImageWoof, ImageNette, Im-                             synthetic image size               32
+ageIDC, and ImageNet-100 are evaluated using the Min-                              valuation method                RDED
+imax valuation method at a synthetic image resolution of
+256×256, as shown in Table 4. Additionally, apart from                       Table 6. Parameter settings of CIFAR10/CIFAR100.
+ImageWoof and ImageNet-100, which is evaluated on three
+widely used network architectures (ConvNet-6, ResNetAP-                                Settings                    Values
+10, and ResNet-18), the remaining datasets (ImageNette
+                                                                                    contamination                    0.0
+and ImageIDC) are assessed only on ResNetAP-10.
+                                                                              nonrepresentative threshold            0.7
+                                                                                     topk words                      30
+                 Settings                    Values                                 guidance scale                   10
+             contamination               0.0/0.01/0.1/0.1                               strength                     0.7
+       nonrepresentative threshold              0.7                               synthetic image size               64
+              topk words                        30                                 valuation method                RDED
+            guidance scale                      10
+                strength                       0.7                              Table 7. Parameter settings of Tiny-ImageNet.
+          synthetic image size                 256
+            valuation method                Minimax
+                                                                       7. Generated Samples of Different Datasets
+Table 4.   Parameter settings of ImageWoof, ImageNette,                Additional visualizations of the distilled data generated by
+ImageNet-100, and ImageIDC.                                            our method are presented in the following figures: CIFAR-
+                                                                       10 (Fig. 3), CIFAR-100 (Fig. 4), Tiny-ImageNet (Figs.
+   For ImageNet-1K, hyperparameters are provided in Ta-                5–6), and Imagenet-1k (Figs. 7–16).
+ble 5. All synthetic images are resized to 224 × 224, fol-
+lowing the validation protocol of RDED with the ResNet-18
+architecture.
+   For CIFAR10/CIFAR100, hyperparameters are summa-                    Figure 3. Synthetic images (32 × 32) selected from the distilled
+rized in Table 6. All synthetic images are resized to 32 × 32,         CIFAR-10 (Class 0-9).
+following the validation protocol of RDED with the modi-
+fied ResNet-18 architecture.
+   For Tiny-ImageNet, hyperparameters are outlined in Ta-
+ble 7. All synthetic images are resized to 64 × 64, following
+the validation protocol of RDED with the modified ResNet-
+18 architecture.
+  Figure 4. Synthetic images (32 × 32) selected from the distilled CIFAR-100 (Class 0-99)
+
+
+
+
+Figure 5. Synthetic images (64 × 64) selected from the distilled Tiny-ImageNet (Class 0-99).
+Figure 6. Synthetic images (64 × 64) selected from the distilled Tiny-ImageNet (Class 100-199).
+Figure 7. Synthetic images (224 × 224) selected from the distilled Imagenet-1k (Class 0-99).
+Figure 8. Synthetic images (224 × 224) selected from the distilled Imagenet-1k (Class 100-199).
+Figure 9. Synthetic images (224 × 224) selected from the distilled Imagenet-1k (Class 200-299).
+Figure 10. Synthetic images (224 × 224) selected from the distilled Imagenet-1k (Class 300-399).
+Figure 11. Synthetic images (224 × 224) selected from the distilled Imagenet-1k (Class 400-499).
+Figure 12. Synthetic images (224 × 224) selected from the distilled Imagenet-1k (Class 500-599).
+Figure 13. Synthetic images (224 × 224) selected from the distilled Imagenet-1k (Class 600-699).
+Figure 14. Synthetic images (224 × 224) selected from the distilled Imagenet-1k (Class 700-799).
+Figure 15. Synthetic images (224 × 224) selected from the distilled Imagenet-1k (Class 800-899).
+Figure 16. Synthetic images (224 × 224) selected from the distilled Imagenet-1k (Class 900-999).
+References                                                                  proved reasoning, ocr, and world knowledge. https:
+                                                                            // llava- vl.github. io/blog /2024- 01 - 30 -
+ [1] George Cazenavette, Tongzhou Wang, Antonio Torralba,                   llava-next/, 2024. 2
+     Alexei A Efros, and Jun-Yan Zhu. Dataset distillation
+                                                                       [13] Noel Loo, Ramin Hasani, Alexander Amini, and Daniela
+     by matching training trajectories. In Proceedings of the
+                                                                            Rus. Efficient dataset distillation using random feature ap-
+     IEEE/CVF Conference on Computer Vision and Pattern
+                                                                            proximation. In Proceedings of the Advances in Neural
+     Recognition (CVPR), pages 4750–4759, 2022. 1
+                                                                            Information Processing Systems (NeurIPS), pages 13877–
+ [2] Zhiwei Deng and Olga Russakovsky. Remember the past:
+                                                                            13891, 2022. 1
+     Distilling datasets into addressable memories for neural net-
+     works. In Proceedings of the Advances in Neural Infor-            [14] Timothy Nguyen, Zhourong Chen, and Jaehoon Lee. Dataset
+     mation Processing Systems (NeurIPS), pages 34391–34404,                meta-learning from kernel ridge-regression. In Proceedings
+     2022. 1                                                                of the International Conference on Learning Representations
+ [3] Zongxion Geng, Jiahui andg Chen, Yuandou Wang, Herbert                 (ICLR), 2021. 1
+     Woisetschlaeger, Sonja Schimmler, Ruben Mayer, Zhiming            [15] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya
+     Zhao, and Chunming Rong. A survey on dataset distillation:             Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry,
+     Approaches, applications and future directions. In Proceed-            Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learn-
+     ings of the International Joint Conference on Artificial Intel-        ing transferable visual models from natural language super-
+     ligence (IJCAI), 2023. 1                                               vision. In Proceedings of the International Conference on
+ [4] Jianyang Gu, Saeed Vahidian, Vyacheslav Kungurtsev, Hao-               Machine Learning (ICML), pages 8748–8763, 2021. 1
+     nan Wang, Wei Jiang, Yang You, and Yiran Chen. Efficient          [16] Duo Su, Junjie Hou, Weizhi Gao, Yingjie Tian, and Bowen
+     dataset distillation via minimax diffusion. In Proceedings of          Tang. Dˆ 4: Dataset distillation via disentangled diffusion
+     the IEEE/CVF Conference on Computer Vision and Pattern                 model. In Proceedings of the IEEE/CVF Conference on
+     Recognition (CVPR), pages 15793–15803, 2024. 1                         Computer Vision and Pattern Recognition (CVPR), pages
+ [5] Chao Jia, Yinfei Yang, Ye Xia, Yi-Ting Chen, Zarana Parekh,            5809–5818, 2024. 1
+     Hieu Pham, Quoc Le, Yun-Hsuan Sung, Zhen Li, and Tom              [17] Ilia Sucholutsky and Matthias Schonlau. Soft-label dataset
+     Duerig. Scaling up visual and vision-language representa-              distillation and text dataset distillation. In Proceedings
+     tion learning with noisy text supervision. In Proceedings of           of the International Joint Conference on Neural Networks
+     the International Conference on Machine Learning (ICML),               (IJCNN), pages 1–8, 2021. 1
+     pages 4904–4916, 2021. 1                                          [18] Peng Sun, Bei Shi, Daiwei Yu, and Tao Lin. On the diversity
+ [6] Jang-Hyun Kim, Jinuk Kim, Seong Joon Oh, Sangdoo                       and realism of distilled dataset: An efficient dataset distilla-
+     Yun, Hwanjun Song, Joonhyun Jeong, Jung-Woo Ha, and                    tion paradigm. In Proceedings of the IEEE/CVF Conference
+     Hyun Oh Song. Dataset condensation via efficient synthetic-            on Computer Vision and Pattern Recognition (CVPR), pages
+     data parameterization. In Proceedings of the International             9390–9399, 2024. 3
+     Conference on Machine Learning (ICML), pages 11102–
+                                                                       [19] Kai Wang, Bo Zhao, Xiangyu Peng, Zheng Zhu, Shuo Yang,
+     11118, 2022. 1
+                                                                            Shuo Wang, Guan Huang, Hakan Bilen, Xinchao Wang, and
+ [7] Saehyung Lee, Sanghyuk Chun, Sangwon Jung, Sangdoo                     Yang You. Cafe: Learning to condense dataset by align-
+     Yun, and Sungroh Yoon. Dataset condensation with con-                  ing features. In Proceedings of the IEEE/CVF Conference
+     trastive signals. In Proceedings of the International Con-             on Computer Vision and Pattern Recognition (CVPR), pages
+     ference on Machine Learning (ICML), pages 12352–12364,                 12196–12205, 2022. 1
+     2022. 1
+                                                                       [20] Tongzhou Wang, Jun-Yan Zhu, Antonio Torralba, and
+ [8] Shiye Lei and Dacheng Tao. A comprehensive survey to
+                                                                            Alexei A. Efros. Dataset distillation. arXiv preprint
+     dataset distillation. IEEE Transactions on Pattern Analysis
+                                                                            arXiv:1811.10959, 2018. 1
+     and Machine Intelligence, 46(1):17–32, 2023. 1
+ [9] Junnan Li, Dongxu Li, Caiming Xiong, and Steven Hoi.              [21] Xindi Wu, Byron Zhang, Zhiwei Deng, and Olga Rus-
+     Blip: Bootstrapping language-image pre-training for unified            sakovsky. Vision-language dataset distillation. Transactions
+     vision-language understanding and generation. In Proceed-              on Machine Learning Research, 2024. 1, 2
+     ings of the International Conference on Machine Learning          [22] Yue Xu, Zhilin Lin, Yusong Qiu, Cewu Lu, and Yong-Lu
+     (ICML), pages 12888–12900, 2022. 1                                     Li. Low-rank similarity mining for multimodal dataset dis-
+[10] Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee.               tillation. In Proceedings of the International Conference on
+     Visual instruction tuning. In Proceedings of the Advances              Machine Learning (ICML), 2024. 2
+     in Neural Information Processing Systems (NeurIPS), pages         [23] Zeyuan Yin, Eric Xing, and Zhiqiang Shen. Squeeze, recover
+     34892–34916, 2023. 2                                                   and relabel: Dataset condensation at imagenet scale from a
+[11] Haotian Liu, Chunyuan Li, Yuheng Li, and Yong Jae Lee.                 new perspective. In Proceedings of the Advances in Neural
+     Improved baselines with visual instruction tuning. In Pro-             Information Processing Systems (NeurIPS), 2023. 1
+     ceedings of the IEEE/CVF Conference on Computer Vision            [24] Ruonan Yu, Songhua Liu, and Xinchao Wang. A compre-
+     and Pattern Recognition, pages 26296–26306, 2024.                      hensive survey to dataset distillation. IEEE Transactions on
+[12] Haotian Liu, Chunyuan Li, Yuheng Li, Bo Li, Yuanhan                    Pattern Analysis and Machine Intelligence, 46(1):150–170,
+     Zhang, Sheng Shen, and Yong Jae Lee. Llava-next: Im-                   2023. 1
+[25] Bo Zhao and Hakan Bilen. Dataset condensation with gra-
+     dient matching. In Proceedings of the International Confer-
+     ence on Learning Representations (ICLR), 2021. 1
+[26] Bo Zhao and Hakan Bilen. Synthesizing informative training
+     samples with gan. In Proceedings of the Advances in Neu-
+     ral Information Processing Systems (NeurIPS), Workshop,
+     2022. 1
+[27] Bo Zhao and Hakan Bilen. Dataset condensation with distri-
+     bution matching. In Proceedings of the IEEE/CVF Confer-
+     ence on Computer Vision and Pattern Recognition (CVPR),
+     pages 6514–6523, 2023. 1
+[28] Yongchao Zhou, Ehsan Nezhadarya, and Jimmy Ba. Dataset
+     distillation using neural feature regression. In Proceedings
+     of the Advances in Neural Information Processing Systems
+     (NeurIPS), pages 9813–9827, 2022. 1
+

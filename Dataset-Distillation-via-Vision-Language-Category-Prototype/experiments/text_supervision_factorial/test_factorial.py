@@ -98,6 +98,14 @@ class AssignmentTests(unittest.TestCase):
         self.assertEqual(policy, "single")
         self.assertEqual(reference, "reference")
 
+    def test_shuffled_t77_uses_shifted_caption_in_one_chunk(self):
+        result = prompt_for(
+            "class", 0, 0, "shuffled_t77", {"class": ["zero", "one", "two"]}, 1, None
+        )
+        self.assertEqual(result[0], "one")
+        self.assertEqual(result[1], 1)
+        self.assertEqual(result[3], "single")
+
     def test_first_sentence_and_chunk_count(self):
         self.assertEqual(first_sentence("One sentence. Another sentence."), "One sentence.")
         self.assertEqual(first_sentence("No punctuation"), "No punctuation")

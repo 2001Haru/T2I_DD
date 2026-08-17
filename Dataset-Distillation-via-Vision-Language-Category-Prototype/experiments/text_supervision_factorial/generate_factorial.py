@@ -33,6 +33,7 @@ GENERATION_PROMPT_MODES = PROMPT_MODES + (
     "raw_label_tokenmax_var",
     "first_sentence",
     "correct_t77",
+    "shuffled_t77",
     "label_pad_dcs",
     "correct_t77_pad_dcs",
     "correct_head_pad_dcs",
@@ -316,6 +317,9 @@ def prompt_for(synset, index, image_index, mode, dcs, shift, prompt_bank):
         return first_sentence(correct), index, None, "single", correct
     if mode == "correct_t77":
         return correct, index, None, "single", correct
+    if mode == "shuffled_t77":
+        source = shuffled_prompt_index(index, len(dcs[synset]), shift)
+        return str(dcs[synset][source]), source, None, "single", correct
     if mode == "label_pad_dcs":
         return IMAGENET2012_CLASSES[synset], None, None, "pad_extended", correct
     if mode == "correct_t77_pad_dcs":
