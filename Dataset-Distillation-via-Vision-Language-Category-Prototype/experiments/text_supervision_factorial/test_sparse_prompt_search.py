@@ -83,6 +83,27 @@ class SparsePromptSearchTests(unittest.TestCase):
             self.assertEqual({row["budget"] for row in index}, {64, 128, 256, 512})
             self.assertEqual({row["prompt"] for row in index}, {"label", "bank_t77"})
 
+    def test_boundary_t77_search_has_expected_grid(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            args = Namespace(
+                run_root=str(root), bank_seeds=(0, 1), budgets=(16, 32),
+                generation_seeds=(0, 1), training_seed=0, data_root=str(root / "data"),
+                caption_file=str(root / "captions.jsonl"), base_model=str(root / "sd15"),
+                prototype=str(root / "prototype.json"), dcs=str(root / "dcs.json"),
+                ipc=50, strength=0.8, classifier_repeats=2, classifier_seed=0,
+                train_batch_size=8, gradient_accumulation_steps=4, num_workers=2,
+                mixed_precision="fp16", prompts=("label", "bank_t77"),
+            )
+            tasks, index = build_tasks(args)
+            self.assertEqual(len(tasks), 28)
+            self.assertEqual(len(index), 16)
+            self.assertEqual(sum(task.kind == "train" for task in tasks.values()), 4)
+            self.assertEqual(sum(task.kind == "generate" for task in tasks.values()), 8)
+            self.assertEqual(sum(task.kind == "eval" for task in tasks.values()), 16)
+            self.assertEqual({row["budget"] for row in index}, {16, 32})
+            self.assertEqual({row["prompt"] for row in index}, {"label", "bank_t77"})
+
     def test_resume_manifest_can_change_gpu_allocation(self):
         source = (HERE / "run_sparse_prompt_search.py").read_text(encoding="utf-8")
         self.assertIn('if key != "gpus"', source)
