@@ -65,7 +65,26 @@ def load_sparse(paths):
                 int(row["budget"]), int(row["bank_seed"]),
                 int(row["generation_seed"]), row["prompt"],
             )
-            payload = {**row, "scores": read_scores(row["evaluation_log"]), "source_index": str(resolved)}
+            synthetic_dir = row.get("synthetic_dir")
+            if not synthetic_dir:
+                evaluation_path = Path(row["evaluation_log"])
+                evaluation_roots = [
+                    parent for parent in evaluation_path.parents if parent.name == "evaluation"
+                ]
+                if len(evaluation_roots) != 1:
+                    raise ValueError(
+                        f"Cannot infer sparse run root from evaluation log: {evaluation_path}"
+                    )
+                sparse_run_root = evaluation_roots[0].parent
+                synthetic_dir = (
+                    sparse_run_root / "synthetic" / f"bank_seed_{int(row['bank_seed'])}"
+                    / f"m_{int(row['budget'])}" / f"seed_{int(row['generation_seed'])}"
+                    / f"sparse_ft_{row['prompt']}"
+                )
+            payload = {
+                **row, "scores": read_scores(row["evaluation_log"]),
+                "source_index": str(resolved), "synthetic_dir": str(synthetic_dir),
+            }
             if key in records:
                 raise ValueError(f"Duplicate sparse cell across indexes: {key}")
             records[key] = payload
@@ -91,6 +110,49 @@ def load_sparse(paths):
                         f"Sparse repeat mismatch: budget={budget}, bank={bank}, gen={generation}"
                     )
     return records, budgets, banks, generations, sources
+
+
+def audit_sparse_latent_pairing(records, budgets, banks, generations):
+    rows = []
+    for budget in budgets:
+        for bank in banks:
+            for generation in generations:
+                by_prompt = {}
+                for prompt in SPARSE_PROMPTS:
+                    directory = Path(records[(budget, bank, generation, prompt)]["synthetic_dir"])
+                    record_path = directory / "prompt_records.json"
+                    manifest_path = directory / "manifest.json"
+                    if not record_path.is_file():
+                        raise FileNotFoundError(record_path)
+                    payload = json.loads(record_path.read_text(encoding="utf-8"))
+                    by_prompt[prompt] = {
+                        (row["synset"], int(row["image_index"])): (
+                            int(row["image_seed"]), int(row["prototype_index"])
+                        )
+                        for row in payload
+                    }
+                    if manifest_path.is_file():
+                        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                        if manifest.get("paired_noise_across_all_cells") is not True:
+                            raise RuntimeError(
+                                f"Generation manifest does not assert paired noise: {manifest_path}"
+                            )
+                label = by_prompt["label"]
+                bank_values = by_prompt["bank_t77"]
+                shared_keys = set(label) & set(bank_values)
+                mismatches = sum(label[key] != bank_values[key] for key in shared_keys)
+                missing = len(set(label) ^ set(bank_values))
+                rows.append({
+                    "budget": budget, "bank_seed": bank,
+                    "generation_seed": generation,
+                    "label_records": len(label), "bank_t77_records": len(bank_values),
+                    "shared_records": len(shared_keys), "missing_record_keys": missing,
+                    "image_seed_or_prototype_mismatches": mismatches,
+                    "exactly_paired": missing == 0 and mismatches == 0,
+                })
+    if not all(row["exactly_paired"] for row in rows):
+        raise RuntimeError("Label and Bank-T77 generation records are not exactly noise-paired")
+    return rows
 
 
 def sparse_value(records, budget, bank, generation, repeat, outcome):
@@ -479,6 +541,9 @@ def main():
     output = Path(args.output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
     sparse, budgets, banks, generations, sparse_sources = load_sparse(args.sparse_index)
+    latent_audit_rows = audit_sparse_latent_pairing(
+        sparse, budgets, banks, generations
+    )
     variance_rows, variance_details = variance_decomposition(
         sparse, budgets, banks, generations,
         args.bootstrap_samples, args.bootstrap_seed,
@@ -493,6 +558,7 @@ def main():
         args.bootstrap_samples, args.bootstrap_seed + 200,
     )
     write_csv(output / "variance_components.csv", variance_rows)
+    write_csv(output / "paired_latent_audit.csv", latent_audit_rows)
     write_csv(output / "bank_minus_label_by_budget.csv", sparse_rows)
     write_csv(output / "dense_paired_contrasts.csv", fixed_rows)
     plot_results(variance_rows, sparse_rows, fixed_rows, output)
@@ -519,6 +585,7 @@ def main():
             ),
         },
         "sources": {"sparse_indexes": sparse_sources, "fixed_index": fixed_source},
+        "paired_latent_audit": latent_audit_rows,
         "variance_components": variance_rows,
         "variance_anova_details": variance_details,
         "bank_minus_label_by_budget": sparse_rows,

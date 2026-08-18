@@ -9,6 +9,7 @@ sys.path.insert(0, str(HERE))
 
 from analyze_t77_noise import (  # noqa: E402
     EXPECTED_BUDGETS,
+    audit_sparse_latent_pairing,
     fixed_contrasts,
     load_fixed,
     load_sparse,
@@ -51,16 +52,28 @@ def test_sparse_and_dense_indexes_preserve_pairing():
                     for prompt, gain in (("label", 0), ("bank_t77", 1)):
                         log = root / f"m{budget}_b{bank_seed}_g{generation_seed}_{prompt}.log"
                         write_log(log, [70 + gain, 72 + gain])
+                        synthetic = root / "synthetic" / f"m{budget}_b{bank_seed}_g{generation_seed}_{prompt}"
+                        synthetic.mkdir(parents=True)
+                        (synthetic / "prompt_records.json").write_text(json.dumps([{
+                            "synset": "class", "image_index": 0,
+                            "image_seed": generation_seed, "prototype_index": 0,
+                        }]), encoding="utf-8")
+                        (synthetic / "manifest.json").write_text(json.dumps({
+                            "paired_noise_across_all_cells": True,
+                        }), encoding="utf-8")
                         sparse_rows.append({
                             "budget": budget, "bank_seed": bank_seed,
                             "generation_seed": generation_seed, "prompt": prompt,
                             "evaluation_log": str(log),
+                            "synthetic_dir": str(synthetic),
                         })
         sparse_index = root / "sparse.json"
         sparse_index.write_text(json.dumps(sparse_rows), encoding="utf-8")
         records, budgets, banks, generations, _ = load_sparse([sparse_index])
         paired = sparse_array(records, budgets, banks, generations, "bank_t77_minus_label")
         assert all(value == 1 for budget in paired for bank in budget for gen in bank for value in gen)
+        audit = audit_sparse_latent_pairing(records, budgets, banks, generations)
+        assert all(row["exactly_paired"] for row in audit)
 
         fixed_rows = []
         for training_seed in (0, 1):
