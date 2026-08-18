@@ -81,5 +81,9 @@ def test_sparse_and_dense_indexes_preserve_pairing():
         rows = fixed_contrasts(fixed, training, generations, samples=50, seed=7)
         matched_unpaired = [row for row in rows if row["contrast"] == "matched_minus_unpaired"]
         within_family = [row for row in rows if row["contrast"] == "correct_minus_shuffled"]
+        interaction = next(
+            row for row in rows if row["contrast"] == "matching_specific_interaction"
+        )
         assert all(row["mean_difference"] == 2 for row in matched_unpaired)
         assert all(row["mean_difference"] == 1 for row in within_family)
+        assert interaction["mean_difference"] == 0

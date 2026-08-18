@@ -324,6 +324,13 @@ def fixed_contrast_value(records, training, generation, repeat, contrast, prompt
             records[(training, generation, family, "correct_t77")]["scores"][repeat]
             - records[(training, generation, family, "shuffled_t77")]["scores"][repeat]
         )
+    if contrast == "matching_specific_interaction":
+        return (
+            records[(training, generation, "matched_ft", "correct_t77")]["scores"][repeat]
+            - records[(training, generation, "unpaired_ft", "correct_t77")]["scores"][repeat]
+            - records[(training, generation, "matched_ft", "shuffled_t77")]["scores"][repeat]
+            + records[(training, generation, "unpaired_ft", "shuffled_t77")]["scores"][repeat]
+        )
     raise ValueError(contrast)
 
 
@@ -346,7 +353,11 @@ def fixed_contrast_bootstrap(
                 reference = (
                     records[(training, generation, "matched_ft", prompt)]
                     if contrast == "matched_minus_unpaired"
-                    else records[(training, generation, family, "correct_t77")]
+                    else (
+                        records[(training, generation, family, "correct_t77")]
+                        if contrast == "correct_minus_shuffled"
+                        else records[(training, generation, "matched_ft", "correct_t77")]
+                    )
                 )
                 repeat_count = len(reference["scores"])
                 repeats = range(repeat_count) if draw_rng is None else [
@@ -372,7 +383,7 @@ def fixed_contrasts(records, training_seeds, generation_seeds, samples, seed):
         ("matched_minus_unpaired", prompt, None) for prompt in DENSE_PROMPTS
     ] + [
         ("correct_minus_shuffled", None, family) for family in DENSE_FAMILIES
-    ]
+    ] + [("matching_specific_interaction", None, None)]
     for offset, (contrast, prompt, family) in enumerate(specifications):
         mean, lower, upper = fixed_contrast_bootstrap(
             records, training_seeds, generation_seeds, contrast, samples,
@@ -389,7 +400,11 @@ def fixed_contrasts(records, training_seeds, generation_seeds, samples, seed):
                 len(
                     records[(training, generation, "matched_ft", prompt)]["scores"]
                     if contrast == "matched_minus_unpaired"
-                    else records[(training, generation, family, "correct_t77")]["scores"]
+                    else (
+                        records[(training, generation, family, "correct_t77")]["scores"]
+                        if contrast == "correct_minus_shuffled"
+                        else records[(training, generation, "matched_ft", "correct_t77")]["scores"]
+                    )
                 )
                 for training in training_seeds for generation in generation_seeds
             ),
@@ -435,7 +450,11 @@ def plot_results(variance_rows, sparse_rows, fixed_rows, output):
 
     labels = [
         f"M-U\n{row['prompt']}" if row["contrast"] == "matched_minus_unpaired"
-        else f"C-S\n{row['checkpoint_family']}"
+        else (
+            f"C-S\n{row['checkpoint_family']}"
+            if row["contrast"] == "correct_minus_shuffled"
+            else "Matching-specific\ninteraction"
+        )
         for row in fixed_rows
     ]
     axes[2].errorbar(
