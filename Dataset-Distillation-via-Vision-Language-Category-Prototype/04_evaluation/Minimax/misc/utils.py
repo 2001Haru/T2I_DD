@@ -5,6 +5,8 @@ import random
 import numpy as np
 import os
 import time
+import csv
+import json
 import matplotlib
 import matplotlib.pyplot as plt
 
@@ -116,9 +118,31 @@ class Plotter():
         self.data['acc_val'].append(acc_val)
         self.data['loss_tr'].append(loss_tr)
         self.data['loss_val'].append(loss_val)
+        self.save_data()
 
         if len(self.data['epoch']) % self.plot_freq == 0:
             self.plot()
+
+    def save_data(self):
+        os.makedirs(self.path, exist_ok=True)
+        fields = ('epoch', 'acc_tr', 'acc_val', 'loss_tr', 'loss_val')
+        rows = [
+            {field: self.data[field][index] for field in fields}
+            for index in range(len(self.data['epoch']))
+        ]
+        csv_path = os.path.join(self.path, f'curve_{self.idx}.csv')
+        csv_temporary = csv_path + '.tmp'
+        with open(csv_temporary, 'w', encoding='utf-8', newline='') as handle:
+            writer = csv.DictWriter(handle, fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(csv_temporary, csv_path)
+        json_path = os.path.join(self.path, f'curve_{self.idx}.json')
+        json_temporary = json_path + '.tmp'
+        with open(json_temporary, 'w', encoding='utf-8') as handle:
+            json.dump(rows, handle, indent=2)
+            handle.write('\n')
+        os.replace(json_temporary, json_path)
 
     def plot(self, color='black'):
         fig, axes = plt.subplots(1, 4, figsize=(4 * 4, 3))

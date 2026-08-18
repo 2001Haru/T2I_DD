@@ -147,6 +147,12 @@ parser.add_argument('--verbose',
 parser.add_argument('-j', '--workers', default=8, type=int, help='number of data loading workers')
 parser.add_argument('--save_ckpt', type=str2bool, default=False)
 parser.add_argument(
+    '--tail_k',
+    default=10,
+    type=int,
+    help='number of final validation checkpoints averaged for the robustness metric',
+)
+parser.add_argument(
     '--per_class_output',
     default='',
     type=str,
