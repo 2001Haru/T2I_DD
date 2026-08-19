@@ -43,7 +43,7 @@ def parse_args():
     parser.add_argument("--bank-m4-model", required=True)
     parser.add_argument("--base-run-root", required=True)
     parser.add_argument("--run-root", required=True)
-    parser.add_argument("--gpus", default="0,1")
+    parser.add_argument("--gpus", default="0,1,2,3")
     parser.add_argument("--generation-seeds", type=int, nargs="+", default=tuple(range(6)))
     parser.add_argument("--classifier-repeats", type=int, default=3)
     parser.add_argument("--classifier-seed", type=int, default=0)
@@ -319,8 +319,10 @@ def main():
     if args.classifier_repeats != 3:
         raise ValueError("Completion requires classifier repeats 3")
     gpus = [value.strip() for value in args.gpus.split(",") if value.strip()]
-    if len(gpus) != 2:
-        raise ValueError("Completion is configured for exactly two GPUs")
+    if not gpus:
+        raise ValueError("At least one GPU must be configured")
+    if len(gpus) != len(set(gpus)):
+        raise ValueError(f"GPU IDs must be unique: {gpus}")
     root = Path(args.run_root).resolve()
     base_index = audit(args, root)
     if args.audit_only:

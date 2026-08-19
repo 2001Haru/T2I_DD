@@ -7,7 +7,7 @@ GENERALITY_RUN_ROOT="${GENERALITY_RUN_ROOT:-./text_supervision_generality_runs/t
 BASE_RUN_ROOT="${BASE_RUN_ROOT:-./low_variance_t77_runs/low_variance_t77_g6_c3_v0}"
 REFIT_RUN_ROOT="${REFIT_RUN_ROOT:-./sparse_prompt_search_runs/sparse_t77_refit_seed01_v0}"
 RUN_ROOT="${RUN_ROOT:-./low_variance_t77_runs/low_variance_t77_label_completion_v0}"
-GPU_IDS="${GPU_IDS:-0,1}"
+GPU_IDS="${GPU_IDS:-0,1,2,3}"
 DIFFUSERS_SRC="${DIFFUSERS_SRC:-/linxi/packages/VLCP/diffusers/src}"
 EXTRA_ARGS=()
 if [[ "${AUDIT_ONLY:-false}" == "true" ]]; then EXTRA_ARGS+=(--audit-only); fi
