@@ -64,3 +64,27 @@ def test_assignment_schema_and_montage_render():
         assert output.is_file()
         with Image.open(output) as image:
             assert image.width == 150 + 5 * 32 + 4 * 4
+
+
+def test_nearest_mode_uses_all_clusters_and_smallest_distances():
+    rows = []
+    for cluster_id in range(3):
+        for image_id in range(7):
+            rows.append(
+                {
+                    "synset": "n00000001",
+                    "cluster_id": cluster_id,
+                    "image_value": f"{cluster_id}_{image_id}.jpg",
+                    "center_distance": float(7 - image_id),
+                }
+            )
+    selected, _ = sample_rows(
+        rows, 123, 1, 5, cluster_selection="all", member_selection="nearest"
+    )
+    assert len(selected) == 15
+    assert {row["cluster_id"] for row in selected} == {0, 1, 2}
+    for cluster_id in range(3):
+        distances = [
+            row["center_distance"] for row in selected if row["cluster_id"] == cluster_id
+        ]
+        assert sorted(distances) == [1.0, 2.0, 3.0, 4.0, 5.0]

@@ -23,6 +23,12 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=20260819)
     parser.add_argument("--clusters-per-class", type=int, default=5)
     parser.add_argument("--images-per-cluster", type=int, default=5)
+    parser.add_argument(
+        "--cluster-selection", choices=("random", "all"), default="random"
+    )
+    parser.add_argument(
+        "--member-selection", choices=("random", "nearest"), default="random"
+    )
     parser.add_argument("--tile-size", type=int, default=224)
     return parser.parse_args()
 
@@ -70,6 +76,10 @@ def read_assignment(path):
         (field for field in ("image_path", "path", "relative", "relative_path") if field in fields),
         None,
     )
+    distance_field = next(
+        (field for field in ("center_rmse", "distance_to_center", "distance") if field in fields),
+        None,
+    )
     if not cluster_field or not synset_field or not image_field:
         raise ValueError(
             f"Unsupported assignment schema in {path}: {sorted(fields)}"
@@ -81,6 +91,9 @@ def read_assignment(path):
                 "synset": str(row[synset_field]),
                 "cluster_id": int(float(row[cluster_field])),
                 "image_value": str(row[image_field]),
+                "center_distance": (
+                    float(row[distance_field]) if distance_field and row[distance_field] else None
+                ),
             }
         )
     return normalized
@@ -106,7 +119,14 @@ def resolve_image(image_value, data_root):
     )
 
 
-def sample_rows(rows, seed, clusters_per_class, images_per_cluster):
+def sample_rows(
+    rows,
+    seed,
+    clusters_per_class,
+    images_per_cluster,
+    cluster_selection="random",
+    member_selection="random",
+):
     grouped = defaultdict(list)
     for row in rows:
         grouped[(row["synset"], row["cluster_id"])].append(row)
@@ -122,13 +142,16 @@ def sample_rows(rows, seed, clusters_per_class, images_per_cluster):
             for cluster_id, members in clusters.items()
             if len(members) >= images_per_cluster
         )
-        if len(eligible) < clusters_per_class:
+        if cluster_selection == "random" and len(eligible) < clusters_per_class:
             raise RuntimeError(
                 f"{synset} has only {len(eligible)} clusters with at least "
                 f"{images_per_cluster} members; need {clusters_per_class}"
             )
-        class_rng = random.Random(stable_seed(seed, synset, "clusters"))
-        chosen_clusters = sorted(class_rng.sample(eligible, clusters_per_class))
+        if cluster_selection == "all":
+            chosen_clusters = eligible
+        else:
+            class_rng = random.Random(stable_seed(seed, synset, "clusters"))
+            chosen_clusters = sorted(class_rng.sample(eligible, clusters_per_class))
         audit.append(
             {
                 "synset": synset,
@@ -140,8 +163,19 @@ def sample_rows(rows, seed, clusters_per_class, images_per_cluster):
         )
         for row_index, cluster_id in enumerate(chosen_clusters, start=1):
             members = sorted(clusters[cluster_id], key=lambda row: row["image_value"])
-            member_rng = random.Random(stable_seed(seed, synset, cluster_id, "members"))
-            chosen_members = member_rng.sample(members, images_per_cluster)
+            if member_selection == "nearest":
+                if any(member.get("center_distance") is None for member in members):
+                    raise ValueError(
+                        "Nearest-member selection requires a center distance column "
+                        f"for {synset} cluster {cluster_id}"
+                    )
+                chosen_members = sorted(
+                    members,
+                    key=lambda member: (member["center_distance"], member["image_value"]),
+                )[:images_per_cluster]
+            else:
+                member_rng = random.Random(stable_seed(seed, synset, cluster_id, "members"))
+                chosen_members = member_rng.sample(members, images_per_cluster)
             for column_index, member in enumerate(chosen_members, start=1):
                 selected.append(
                     {
@@ -162,7 +196,9 @@ def fit_with_letterbox(image, size):
     return tile
 
 
-def render_class_montage(dataset, synset, rows, output_path, tile_size):
+def render_class_montage(
+    dataset, synset, rows, output_path, tile_size, cluster_selection="random", member_selection="random"
+):
     rows = sorted(rows, key=lambda row: (row["row_index"], row["column_index"]))
     row_ids = sorted({row["row_index"] for row in rows})
     columns = max(row["column_index"] for row in rows)
@@ -173,13 +209,23 @@ def render_class_montage(dataset, synset, rows, output_path, tile_size):
     height = header + len(row_ids) * (tile_size + gap) - gap
     canvas = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(canvas)
-    draw.text((8, 8), f"{dataset}: {synset} | random clusters and random real members", fill="black")
+    draw.text(
+        (8, 8),
+        f"{dataset}: {synset} | {cluster_selection} clusters, {member_selection} real members",
+        fill="black",
+    )
     for row_id in row_ids:
         current = [row for row in rows if row["row_index"] == row_id]
         y = header + (row_id - 1) * (tile_size + gap)
         first = current[0]
         draw.text((8, y + 8), f"cluster {first['cluster_id']}", fill="black")
         draw.text((8, y + 29), f"n={first['cluster_size']}", fill=(70, 70, 70))
+        if member_selection == "nearest":
+            draw.text(
+                (8, y + 50),
+                f"RMSE {current[0]['center_distance']:.3f}-{current[-1]['center_distance']:.3f}",
+                fill=(70, 70, 70),
+            )
         for member in current:
             x = left + (member["column_index"] - 1) * (tile_size + gap)
             with Image.open(member["resolved_path"]) as image:
@@ -228,7 +274,13 @@ def main():
         "seed": args.seed,
         "clusters_per_class": args.clusters_per_class,
         "images_per_cluster": args.images_per_cluster,
-        "sampling": "uniform clusters among clusters with enough members; uniform members without replacement",
+        "cluster_selection": args.cluster_selection,
+        "member_selection": args.member_selection,
+        "sampling": (
+            "uniform clusters among eligible clusters and uniform members without replacement"
+            if args.cluster_selection == args.member_selection == "random"
+            else "all eligible clusters; members sorted by stored center distance"
+        ),
         "assignments": {
             name: {"path": str(path), "sha256": sha256_file(path)}
             for name, path in assignments.items()
@@ -251,6 +303,8 @@ def main():
             stable_seed(args.seed, dataset),
             args.clusters_per_class,
             args.images_per_cluster,
+            args.cluster_selection,
+            args.member_selection,
         )
         for row in selected:
             row["dataset"] = dataset
@@ -262,7 +316,15 @@ def main():
             by_class[row["synset"]].append(row)
         for synset, rows in sorted(by_class.items()):
             relative = Path("montages") / dataset / f"{synset}.jpg"
-            render_class_montage(dataset, synset, rows, output_dir / relative, args.tile_size)
+            render_class_montage(
+                dataset,
+                synset,
+                rows,
+                output_dir / relative,
+                args.tile_size,
+                args.cluster_selection,
+                args.member_selection,
+            )
             index_entries.append(
                 {"dataset": dataset, "synset": synset, "montage_path": relative.as_posix()}
             )
@@ -278,6 +340,7 @@ def main():
             "cluster_size": row["cluster_size"],
             "column_index": row["column_index"],
             "image_path": row["resolved_path"],
+            "center_distance": row.get("center_distance"),
         }
         for row in all_selected
     ]
