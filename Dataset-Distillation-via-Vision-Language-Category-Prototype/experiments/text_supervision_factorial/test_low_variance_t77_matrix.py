@@ -86,3 +86,8 @@ def test_plotter_persists_machine_readable_validation_history():
         assert csv_path.is_file() and json_path.is_file()
         payload = json.loads(json_path.read_text(encoding="utf-8"))
         assert [row["acc_val"] for row in payload] == [40.0, 45.0]
+
+
+def test_summary_contains_direct_m4_minus_m64_pairing():
+    source = (HERE / "run_low_variance_t77_matrix.py").read_text(encoding="utf-8")
+    assert '"bank_m4_minus_bank_m64"' in source

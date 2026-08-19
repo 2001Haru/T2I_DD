@@ -394,6 +394,7 @@ def summarize(index, output):
         ("matched_minus_unpaired_shuffled", ("matched_ft", "shuffled_t77"), ("unpaired_ft", "shuffled_t77")),
         ("bank_m4_minus_matched_correct", ("bank_m4", "bank_t77"), ("matched_ft", "correct_t77")),
         ("bank_m64_minus_matched_correct", ("bank_m64", "bank_t77"), ("matched_ft", "correct_t77")),
+        ("bank_m4_minus_bank_m64", ("bank_m4", "bank_t77"), ("bank_m64", "bank_t77")),
         ("bank_m4_minus_label_anchor", ("bank_m4", "bank_t77"), ("label_ft", "label")),
         ("bank_m64_minus_label_anchor", ("bank_m64", "bank_t77"), ("label_ft", "label")),
         ("label_ft_correct_minus_label", ("label_ft", "correct_t77"), ("label_ft", "label")),
